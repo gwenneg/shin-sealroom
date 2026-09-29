@@ -8,6 +8,8 @@
 | `internal/cli/` | Command-line parsing and dispatch, and the exit codes; no launcher logic |
 | `images/agent/` | The agent image: Claude Code and the GitHub CLI, pinned by checksum, the `git` and `gh` stand-ins, the session script, and its smoke test |
 | `images/proxy/` | The proxy image: iron-proxy built from a pinned, verified commit, and its smoke test |
+| `internal/proxy/` | The proxy's rules for a run, its environment file and the run's CA, pinned by `TestConfigRules` |
+| `internal/e2e/` | End-to-end tests against a real container runtime and the real services, skipped unless `SEALROOM_E2E=1` |
 | `internal/sandbox/` | Every restriction of both containers, as Podman and Docker arguments, pinned by `TestArgsSeal`. It starts nothing |
 
 Everything lives under `internal/` so no other module can import it: Sealroom is a tool, not a library.
@@ -28,6 +30,7 @@ docker build -t sealroom-proxy:dev images/proxy        # the proxy image
 TMPDIR=$HOME/.cache images/proxy/smoke-test.sh sealroom-proxy:dev   # starts it sealed, checks it refuses by default
 docker build -t sealroom-agent:dev images/agent        # the agent image
 TMPDIR=$HOME/.cache images/agent/smoke-test.sh sealroom-agent:dev   # its tools, the stand-ins and the session, with no network
+SEALROOM_E2E=1 SEALROOM_PROXY_IMAGE=sealroom-proxy:dev go test -count=1 ./internal/e2e/   # a run's rules, against the real services
 ```
 
 CI runs the same commands on every pull request. The smoke tests mount files from `TMPDIR`, which must be shared with the container runtime: under the home directory with Colima. Set `CONTAINER_RUNTIME=podman` to run them with Podman.

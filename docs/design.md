@@ -65,6 +65,12 @@ Sealroom does not use its published images or binaries, which are not signed. It
 
 Every header the agent sends is dropped unless it is on the proxy's list for that destination, so a plugin cannot slip a credential of its own next to the placeholder. The Files API, which could store data for later retrieval, is refused. Every request is logged with its decision.
 
+The rules are written for each run by `internal/proxy`, from the repository of the run and the kind of Claude credential, and nothing else. Two tests pin them: `TestConfigRules` checks what the rules say, and `TestProxyRules` starts the real proxy image with them and probes it from the agent's network, against the real services, with fake credentials: every refusal must come from the proxy, and a fake credential must reach the service exactly where the rules add it.
+
+Each run gets its own certificate authority, an ECDSA P-256 key valid for 24 hours that cannot sign another authority. Only the agent trusts it.
+
+The proxy's credentials reach it in an environment file with exactly two variables. iron-proxy reads variables starting with `IRON_` as overrides of its configuration, so no other name ever reaches it. Its management API and its explicit tunnel listener stay off.
+
 The proxy's limits are raised for agent traffic: request bodies up to 64 MiB, since the default truncates large conversations silently, and ten minutes for an upstream answer to begin. Its metrics listener is bound to its own loopback, out of the agent's reach.
 
 ## Credentials
