@@ -25,6 +25,7 @@ It is designed for a Claude subscription, an Anthropic API key, or Claude on Goo
 
 - [Design](docs/design.md): how Sealroom works and the decisions behind it.
 - [Threat model](docs/threat-model.md): what Sealroom defends against, what it trusts, and its limits.
+- [Development](docs/development.md): the layout and the commands to build and test.
 
 ## License
 

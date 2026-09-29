@@ -2,6 +2,10 @@
 
 Sealroom runs untrusted plugins with the user's credentials within reach of a proxy. Every change is judged by whether it keeps the tool easy to trust. Read [the design](../docs/design.md) and [the threat model](../docs/threat-model.md) before changing anything.
 
+## Building and testing
+
+[docs/development.md](../docs/development.md) has the layout and the commands. Run all of them before pushing: CI runs the same ones, and a pull request goes up only when they pass locally.
+
 ## Rules the design must keep
 
 - No credential ever enters the agent container, not even short-lived. The proxy adds credentials; the agent holds placeholders.

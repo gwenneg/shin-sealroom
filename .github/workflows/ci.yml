@@ -1,0 +1,37 @@
+# Build, vet, test and scan for known vulnerabilities on every push to main
+# and every pull request. The job token can only read the repository. Actions
+# are pinned to commit SHAs, and govulncheck to a version.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt-formatted:"; echo "$unformatted"; exit 1
+          fi
+      - name: Vet, for Linux and macOS
+        run: go vet ./... && GOOS=darwin go vet ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Build a static binary
+        run: CGO_ENABLED=0 go build -trimpath -o sealroom ./cmd/sealroom
+      - name: Scan for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
