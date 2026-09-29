@@ -1,5 +1,5 @@
 # Build, vet, test and scan for known vulnerabilities on every push to main
-# and every pull request. The job token can only read the repository. Actions
+# and every pull request, and build and smoke-test the proxy image. The job token can only read the repository. Actions
 # are pinned to commit SHAs, and govulncheck to a version.
 name: CI
 
@@ -35,3 +35,16 @@ jobs:
         run: CGO_ENABLED=0 go build -trimpath -o sealroom ./cmd/sealroom
       - name: Scan for known vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  proxy-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the proxy image from source
+        run: docker build -t sealroom-proxy:ci images/proxy
+      - name: Start it sealed and check it refuses by default
+        run: |
+          docker pull -q "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
+          images/proxy/smoke-test.sh sealroom-proxy:ci

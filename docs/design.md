@@ -49,7 +49,7 @@ The repository is copied into the container at start, so the plugin never writes
 
 The proxy is [iron-proxy](https://github.com/paradigmxyz/iron-proxy), an egress firewall built for untrusted workloads. It intercepts TLS with a CA created for the run, so it sees each request's host, method, path and headers.
 
-Sealroom does not use its published images or binaries, which are not signed. It builds the proxy from a release commit whose signature it verifies, on a minimal base image, pinned by digest.
+Sealroom does not use its published images or binaries, which are not signed. It builds the proxy from a release commit whose signature was verified when it was pinned, on a minimal base image pinned by digest, with Go modules checked against iron-proxy's `go.sum`. The image, in `images/proxy`, runs as a non-root user and holds nothing but the proxy's static binary.
 
 ### What each credential can do
 
