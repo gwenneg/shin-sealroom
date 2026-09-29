@@ -6,6 +6,7 @@
 |---|---|
 | `cmd/sealroom/` | The entry point, nothing else |
 | `internal/cli/` | Command-line parsing and dispatch, and the exit codes; no launcher logic |
+| `internal/sandbox/` | Every restriction of both containers, as Podman and Docker arguments, pinned by `TestArgsSeal`. It starts nothing |
 
 Everything lives under `internal/` so no other module can import it: Sealroom is a tool, not a library.
 

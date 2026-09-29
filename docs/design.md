@@ -39,6 +39,10 @@ The launcher drives Podman or Docker directly, Podman first when both are instal
 | No credential of any kind, only placeholders | A plugin that reads every file and every environment variable finds nothing usable |
 | Memory, CPU, process and time limits | A plugin cannot exhaust the machine |
 
+The proxy container is locked down the same way: read-only root, no capabilities, `no-new-privileges`, the same limits, and only its configuration, the CA certificate and key mounted, read-only. It answers DNS and HTTPS on low ports through the `ip_unprivileged_port_start` setting of its own network namespace, not a capability. Its credentials arrive in an environment file that only the proxy receives.
+
+Both containers start with `--pull never`, so a run never reaches a registry. The restrictions are set in one place, `internal/sandbox`, and `TestArgsSeal` fails if one goes missing or a forbidden option appears, such as `--privileged`, an added capability, a host namespace, a published port, or an extra mount. A host path mounted into a container is refused if it is not absolute and clean, if it is the root, the home directory or one of its parents, or if it contains a character that would change the meaning of the mount option. The agent receives only a fixed list of environment variables, and every credential variable must hold the placeholder.
+
 The repository is copied into the container at start, so the plugin never writes to the user's clone. The output directory receives the changes as a patch, the branch name, and the recorded pull request, and nothing else is written on the host.
 
 ## The proxy
