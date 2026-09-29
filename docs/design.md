@@ -43,7 +43,9 @@ The proxy container is locked down the same way: read-only root, no capabilities
 
 Both containers start with `--pull never`, so a run never reaches a registry. The restrictions are set in one place, `internal/sandbox`, and `TestArgsSeal` fails if one goes missing or a forbidden option appears, such as `--privileged`, an added capability, a host namespace, a published port, or an extra mount. A host path mounted into a container is refused if it is not absolute and clean, if it is the root, the home directory or one of its parents, or if it contains a character that would change the meaning of the mount option. The agent receives only a fixed list of environment variables, and every credential variable must hold the placeholder.
 
-The repository is copied into the container at start, so the plugin never writes to the user's clone. The output directory receives the changes as a patch, the branch name, and the recorded pull request, and nothing else is written on the host.
+The image holds Claude Code, git and the GitHub CLI, each downloaded at a pinned version and checked against a checksum in the image's definition, on a Debian base pinned by digest. Claude Code follows its stable channel, with its auto-updater and non-essential traffic turned off, and its first-run screens skipped. The stand-ins for `git` and `gh` come first on the `PATH`, ahead of the real commands.
+
+The repository is copied into the container at start, so the plugin never writes to the user's clone. The output directory receives the changes as a patch, the branch name, and the recorded pull request, and nothing else is written on the host. When Claude Code exits, the session script commits whatever is left uncommitted and writes every commit since the repository's default branch as one patch.
 
 ## The proxy
 
@@ -79,7 +81,7 @@ The credentials live on the host and in the proxy container, never in the agent 
 
 ## Push and pull request after review
 
-The plugin never pushes. In the agent container, `git push` and `gh pr create` are stand-ins: they record the branch and the pull request's title and body in the output directory, and tell the agent that both happen after the user's review. `gh pr view`, `list` and `status` answer that the pull request does not exist yet.
+The plugin never pushes. In the agent container, `git push` and `gh pr create` are stand-ins: they record the branch and the pull request's title, body, base branch and draft flag in the output directory, and ignore any repository, head, reviewer or label the agent passes, and tell the agent that both happen after the user's review. `gh pr view`, `list` and `status` answer that the pull request does not exist yet.
 
 When the session ends, the launcher treats the output directory as untrusted input:
 

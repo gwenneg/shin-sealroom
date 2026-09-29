@@ -14,6 +14,7 @@ Sealroom runs untrusted plugins with the user's credentials within reach of a pr
 - Everything the agent container writes is untrusted input on the host: validated, size-limited, never executed, and never allowed to pick the target repository.
 - Container restrictions live only in `internal/sandbox`, and `TestArgsSeal` pins them. Never weaken the test to make a change pass.
 - The proxy is built from a verified release commit, never taken from a published image or binary. [docs/development.md](../docs/development.md) has the steps to move to a new release.
+- Every download in an image is pinned to a version and checked against a checksum written in the image's definition. [docs/development.md](../docs/development.md) has the steps to move Claude Code and the GitHub CLI.
 - A change to what the proxy allows, or to the containers' restrictions, updates the design or the threat model in the same pull request.
 - **Everything added is at its latest release**: languages, dependencies, GitHub Actions, tools, container images, Claude Code. Look the version up at the time of adding, never reuse one from memory or from the local toolchain. Actions and images are pinned by SHA or digest, with the version in a comment.
 - A new dependency needs a reason in the pull request description.

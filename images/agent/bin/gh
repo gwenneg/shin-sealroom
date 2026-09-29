@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Sealroom stand-in for the GitHub CLI: `gh pr create` is recorded, never
+# sent, and the pull request is opened on the host after the user reviews the
+# changes. Every other command runs as is, through the proxy, read-only.
+not_yet="Sealroom: no pull request exists yet. Sealroom opens it from the user's machine after the user reviews the changes, once this session ends. Do not look for it or retry."
+if [ "${1:-}" = pr ]; then
+  case ${2:-} in
+    create) ;;
+    view | checks) echo "$not_yet" >&2; exit 1 ;;
+    list | status) echo "$not_yet"; exit 0 ;;
+    *) exec /usr/bin/gh "$@" ;;
+  esac
+else
+  exec /usr/bin/gh "$@"
+fi
+shift 2
+mkdir -p /out/pr
+while [ $# -gt 0 ]; do
+  case $1 in
+    -t | --title) printf '%s' "${2:-}" > /out/pr/title; shift ;;
+    -b | --body) printf '%s' "${2:-}" > /out/pr/body; shift ;;
+    -F | --body-file) cat -- "${2:-/dev/null}" > /out/pr/body; shift ;;
+    -B | --base) printf '%s' "${2:-}" > /out/pr/base; shift ;;
+    --title=*) printf '%s' "${1#*=}" > /out/pr/title ;;
+    --body=*) printf '%s' "${1#*=}" > /out/pr/body ;;
+    --body-file=*) cat -- "${1#*=}" > /out/pr/body ;;
+    --base=*) printf '%s' "${1#*=}" > /out/pr/base ;;
+    -d | --draft) : > /out/pr/draft ;;
+    -R | --repo | -H | --head | -a | --assignee | -r | --reviewer | -l | --label | -m | --milestone | -p | --project) shift ;;
+  esac
+  shift
+done
+echo "Sealroom: the pull request is recorded, not sent. Sealroom opens it from the user's machine after the user reviews the changes, once this session ends. Do not look for it or retry."

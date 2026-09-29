@@ -1,5 +1,5 @@
 # Build, vet, test and scan for known vulnerabilities on every push to main
-# and every pull request, and build and smoke-test the proxy image. The job token can only read the repository. Actions
+# and every pull request, and build and smoke-test both images. The job token can only read the repository. Actions
 # are pinned to commit SHAs, and govulncheck to a version.
 name: CI
 
@@ -48,3 +48,14 @@ jobs:
         run: |
           docker pull -q "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
           images/proxy/smoke-test.sh sealroom-proxy:ci
+
+  agent-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the agent image
+        run: docker build -t sealroom-agent:ci images/agent
+      - name: Check its tools, the stand-ins and the session, with no network
+        run: images/agent/smoke-test.sh sealroom-agent:ci

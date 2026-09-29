@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs in the agent container: copies the repository in, starts Claude Code
+# with the given arguments, and writes what the session changed to /out.
+# The host treats everything in /out as untrusted input.
+set -euo pipefail
+cp -a /src/. /work/
+cd /work
+# Claude Code's first-run screens are not part of a Sealroom session.
+printf '{"hasCompletedOnboarding": true}\n' > "$HOME/.claude.json"
+status=0
+claude "$@" || status=$?
+/usr/bin/git add -A
+if ! /usr/bin/git diff --cached --quiet; then
+  /usr/bin/git -c user.name="${GIT_AUTHOR_NAME:-Sealroom}" -c user.email="${GIT_AUTHOR_EMAIL:-sealroom@localhost}" \
+    commit -q -m "Uncommitted changes from the sealed session"
+fi
+/usr/bin/git branch --show-current > /out/branch
+/usr/bin/git format-patch --stdout "$(/usr/bin/git rev-parse origin/HEAD)..HEAD" > /out/changes.patch
+exit "$status"
