@@ -35,6 +35,8 @@ Everything that comes from the plugin, and everything the agent container writes
 | Store data on the provider for later retrieval | The Files API is refused. Only the model endpoints are allowed |
 | Push the code, or other data, to a repository of the attacker's | GitHub writes are refused. The push happens on the host, after the user's review, to the repository the user named |
 | Use the user's GitHub token beyond the run | It is added only to reads on the repository of the run |
+| Get the launcher to mount more than intended | Every host path is checked: absolute and clean, never the root, the home directory or one of its parents, and no character that changes the meaning of a mount option. The agent's mounts are pinned by a test |
+| Receive a real credential through the environment | The agent receives only a fixed list of variables, and every credential variable must hold the placeholder, or the run does not start |
 | Change the network rules | No capabilities, no privilege to gain, and the rules live in the proxy, outside the agent container |
 | Run code on the host through the output | The patch is applied to the host's own clone, and changes to a `.git` directory are refused. The branch name is validated. The target repository never comes from the container |
 | Hide a harmful change in the pull request | Not prevented. The user reviews the diff before anything leaves |
