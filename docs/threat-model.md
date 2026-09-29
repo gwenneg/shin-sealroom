@@ -37,6 +37,7 @@ Everything that comes from the plugin, and everything the agent container writes
 | Use the user's GitHub token beyond the run | It is added only to reads on the repository of the run |
 | Get the launcher to mount more than intended | Every host path is checked: absolute and clean, never the root, the home directory or one of its parents, and no character that changes the meaning of a mount option. The agent's mounts are pinned by a test |
 | Receive a real credential through the environment | The agent receives only a fixed list of variables, and every credential variable must hold the placeholder, or the run does not start |
+| Reconfigure the proxy | The rules are written by the launcher and mounted read-only. The proxy's environment holds only the two credential variables, never an `IRON_` override, and its management API is off |
 | Change the network rules | No capabilities, no privilege to gain, and the rules live in the proxy, outside the agent container |
 | Run code on the host through the output | The patch is applied to the host's own clone, and changes to a `.git` directory are refused. The branch name is validated. The target repository never comes from the container |
 | Hide a harmful change in the pull request | Not prevented. The user reviews the diff before anything leaves |

@@ -48,6 +48,11 @@ jobs:
         run: |
           docker pull -q "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
           images/proxy/smoke-test.sh sealroom-proxy:ci
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Probe a run's rules against the real services
+        run: SEALROOM_E2E=1 SEALROOM_PROXY_IMAGE=sealroom-proxy:ci go test -count=1 -v ./internal/e2e/
 
   agent-image:
     runs-on: ubuntu-latest
