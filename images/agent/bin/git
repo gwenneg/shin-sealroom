@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Sealroom stand-in for git: a push is recorded, never sent, and happens on
+# the host after the user reviews the changes. Every other command runs as is.
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case ${args[$i]} in
+    -C | -c | --git-dir | --work-tree | --namespace | --exec-path) i=$((i + 2)) ;;
+    -*) i=$((i + 1)) ;;
+    push) break ;;
+    *) exec /usr/bin/git "$@" ;;
+  esac
+done
+[ "${args[$i]:-}" = push ] || exec /usr/bin/git "$@"
+branch=$(/usr/bin/git "${args[@]:0:$i}" branch --show-current)
+printf '%s\n' "$branch" > /out/push-branch
+echo "Sealroom: the push of '$branch' is recorded, not sent. Sealroom pushes it from the user's machine after the user reviews the changes, once this session ends. Do not check the remote for it: it will not be there until then."
