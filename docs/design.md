@@ -89,11 +89,15 @@ The credentials live on the host and in the proxy container, never in the agent 
 
 | Credential | Source | Scope in the run |
 |---|---|---|
-| Claude subscription | A token from `claude setup-token` | Model requests only |
-| Anthropic API key | The user's key | Model requests only |
+| Claude subscription | A token from `claude setup-token`, saved with `sealroom login`, or `CLAUDE_CODE_OAUTH_TOKEN` | Model requests only |
+| Anthropic API key | Saved with `sealroom login`, or `ANTHROPIC_API_KEY` | Model requests only |
 | Google Vertex AI | The user's Application Default Credentials, including a `gcloud auth application-default login`, mounted read-only into the proxy | Model requests to one project and region |
 | GitHub, during the run | The user's `gh` login | Reads on the repository of the run |
 | GitHub, after the run | The user's `gh` login, used by the launcher on the host | The push and the pull request, after the user's yes |
+
+`sealroom login` reads the Claude credential without showing it, and saves it in the operating system's keychain: the login Keychain on macOS, through `security`, and the Secret Service on Linux, such as GNOME Keyring or KWallet, through `secret-tool`. Both tools receive the secret on their standard input, never in their arguments, where any process on the machine could read it. Only one credential is saved: saving one kind removes the other, and `sealroom logout` removes it. A credential must look like a subscription token or an API key, with nothing but letters, digits, dashes and underscores, so none can carry a newline into a file or a space into a keychain command. The environment variables, when set, come first, for scripts.
+
+For a run, the credentials are written to a file only the user can read, which the runtime's command line reads when it creates the proxy container. The launcher deletes the file as soon as the proxy is created, whatever the outcome, so no credential stays on disk.
 
 ## Push and pull request after review
 
@@ -135,13 +139,14 @@ Built and tested in CI, with Docker and rootless Podman on Linux:
 
 - the agent and proxy images, and every restriction of both containers;
 - the proxy's rules for a run, probed against the real proxy and services;
-- `sealroom run` from the session to the pull request, with a Claude subscription token or an Anthropic API key read from the environment, and the GitHub token from the GitHub CLI. The push and the pull request were also run for real on a test repository, with a signed commit.
+- `sealroom run` from the session to the pull request, with a Claude subscription token or an Anthropic API key from the keychain or the environment, and the GitHub token from the GitHub CLI. The push and the pull request were also run for real on a test repository, with a signed commit.
+- `sealroom login` and `logout`, with the macOS Keychain, checked by hand.
 
 A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.
 
 Not built yet:
 
-- the credentials handling described above, beyond environment variables;
+- Google Vertex AI, in the proxy and the launcher;
 - what a plugin declares;
 - published images: they are built locally for now.
 
@@ -151,4 +156,5 @@ Not tried yet:
 - **An Anthropic API key in a real session**: only the proxy's handling was checked, with a fake key.
 - The push to a fork, and creating the fork.
 - Copy and paste from the session in common terminals.
+- **The Secret Service on Linux**, for `sealroom login`: built, not run, since CI has no Secret Service.
 - **SELinux with Podman, on Fedora and RHEL**: built, but only run where SELinux is off. The [development guide](development.md#checking-on-fedora) has the check to run on Fedora.

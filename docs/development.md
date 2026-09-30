@@ -8,6 +8,7 @@
 | `internal/cli/` | Command-line parsing and dispatch, and the exit codes; no launcher logic |
 | `internal/launcher/` | A sealed session: the run directory, the clone, the networks, the proxy, the agent on the user's terminal, and the cleanup |
 | `internal/publish/` | After the user's yes: where to push, the push, the fork, and the pull request, with the user's GitHub login |
+| `internal/credentials/` | The Claude credential: from the environment, or from the keychain that `sealroom login` saves it in |
 | `internal/review/` | Reads the session's output as untrusted input, applies it to the host's clone, and shows it, sanitised |
 | `internal/container/` | Finds Podman or Docker and runs its commands, with arguments from `internal/sandbox` only |
 | `images/agent/` | The agent image: Claude Code and the GitHub CLI, pinned by checksum, the `git` and `gh` stand-ins, the session script, and its smoke test |
@@ -23,7 +24,7 @@ Everything lives under `internal/` so no other module can import it: Sealroom is
 Build both images with the `:dev` tags above, with `podman build` or `docker build`, then:
 
 ```
-export CLAUDE_CODE_OAUTH_TOKEN=...   # from claude setup-token, or ANTHROPIC_API_KEY
+go run ./cmd/sealroom login   # once: a token from claude setup-token, or an API key
 go run ./cmd/sealroom run <plugin-dir> --repo <owner/repo> --prompt '/<plugin>:<command>'
 ```
 
@@ -41,6 +42,8 @@ CONTAINER_RUNTIME=podman SEALROOM_E2E=1 go test -count=1 -v ./internal/e2e/
 ```
 
 Both end-to-end tests must pass. A denial shows as a permission error on a mounted file, and in `sudo ausearch -m avc -ts recent`.
+
+The keychain on Linux, the Secret Service, cannot be checked in CI either. In a desktop session with GNOME Keyring or KWallet, `go run ./cmd/sealroom login` must save the credential (`secret-tool search service sealroom` shows it), a run must find it, and `go run ./cmd/sealroom logout` must remove it.
 
 ## Go version
 
