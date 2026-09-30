@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/gwenneg/sealroom/internal/container"
+	creds "github.com/gwenneg/sealroom/internal/credentials"
 	"github.com/gwenneg/sealroom/internal/launcher"
 	"github.com/gwenneg/sealroom/internal/proxy"
 	"github.com/gwenneg/sealroom/internal/publish"
@@ -33,13 +34,18 @@ const usage = `Sealroom runs an AI agent plugin or skill in a sealed container, 
 credentials held by a proxy outside it.
 
 Usage:
+  sealroom login               save your Claude credential in the keychain
+  sealroom logout              remove it
   sealroom run <plugin> --repo <owner/repo> [--prompt <text>]
                                run a plugin on a repository, sealed
   sealroom version             print the version
 
+Your Claude credential is a subscription token (claude setup-token) or an
+Anthropic API key. It is only ever handed to the proxy.
+
 Environment:
-  CLAUDE_CODE_OAUTH_TOKEN      a Claude subscription token, from claude setup-token
-  ANTHROPIC_API_KEY            or an Anthropic API key
+  CLAUDE_CODE_OAUTH_TOKEN      a subscription token, used instead of the keychain
+  ANTHROPIC_API_KEY            or an API key
   SEALROOM_RUNTIME             podman or docker; Podman first when both are installed
   SEALROOM_PROXY_IMAGE         the proxy image, sealroom-proxy:dev by default
   SEALROOM_AGENT_IMAGE         the agent image, sealroom-agent:dev by default
@@ -87,6 +93,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return OK
 	case "run":
 		return run(args[1:], stderr)
+	case "login":
+		return login(stdout, stderr)
+	case "logout":
+		return logout(stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return Usage
@@ -119,17 +129,14 @@ func run(args []string, stderr io.Writer) int {
 	return OK
 }
 
-// credentials reads the user's Claude credential from the environment and
-// their GitHub token from the GitHub CLI. They go to the proxy only.
+// credentials finds the user's Claude credential, in the environment or the
+// keychain, and their GitHub token, from the GitHub CLI. They go to the
+// proxy only.
 func credentials() (launcher.Credentials, error) {
 	var c launcher.Credentials
-	switch {
-	case os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "":
-		c.Claude, c.ClaudeAuth = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"), proxy.Subscription
-	case os.Getenv("ANTHROPIC_API_KEY") != "":
-		c.Claude, c.ClaudeAuth = os.Getenv("ANTHROPIC_API_KEY"), proxy.APIKey
-	default:
-		return c, errors.New("set CLAUDE_CODE_OAUTH_TOKEN (from claude setup-token) or ANTHROPIC_API_KEY")
+	var err error
+	if c.Claude, c.ClaudeAuth, err = creds.Load(creds.System()); err != nil {
+		return c, err
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
 	if err != nil {
@@ -137,6 +144,50 @@ func credentials() (launcher.Credentials, error) {
 	}
 	c.GitHub = strings.TrimSpace(string(out))
 	return c, nil
+}
+
+func login(stdout, stderr io.Writer) int {
+	kc := creds.System()
+	if kc == nil {
+		fmt.Fprintln(stderr, "sealroom: no keychain here (on Linux, secret-tool and a Secret Service such as GNOME Keyring). Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY instead.")
+		return Failure
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(stderr, "sealroom: login needs a terminal, to read the credential without showing it")
+		return Failure
+	}
+	fmt.Fprint(stdout, "Paste a Claude subscription token (from claude setup-token) or an Anthropic API key. It will not be shown: ")
+	secret, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "sealroom: %v\n", err)
+		return Failure
+	}
+	kind, err := creds.Save(kc, string(secret))
+	if err != nil {
+		fmt.Fprintf(stderr, "sealroom: %v\n", err)
+		return Failure
+	}
+	what := "subscription token"
+	if kind == proxy.APIKey {
+		what = "API key"
+	}
+	fmt.Fprintf(stdout, "Saved your Claude %s in the keychain.\n", what)
+	return OK
+}
+
+func logout(stdout, stderr io.Writer) int {
+	kc := creds.System()
+	if kc == nil {
+		fmt.Fprintln(stderr, "sealroom: no keychain here, so nothing is saved")
+		return OK
+	}
+	if err := creds.Remove(kc); err != nil {
+		fmt.Fprintf(stderr, "sealroom: %v\n", err)
+		return Failure
+	}
+	fmt.Fprintln(stdout, "Removed your Claude credential from the keychain.")
+	return OK
 }
 
 func envOr(name, fallback string) string {

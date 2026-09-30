@@ -115,7 +115,11 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	if err != nil {
 		return res, err
 	}
-	if _, err := rt.Run(args...); err != nil {
+	_, err = rt.Run(args...)
+	// The runtime read the credentials when it created the container: they
+	// leave the disk now, whatever the outcome.
+	os.Remove(p.EnvFile)
+	if err != nil {
 		return res, fmt.Errorf("starting the proxy: %w", err)
 	}
 	// The proxy leaves the internal network before the network is removed.

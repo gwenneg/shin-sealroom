@@ -62,6 +62,11 @@ func TestSession(t *testing.T) {
 		t.Fatalf("the session exited with %d:\n%s", res.ExitCode, &log)
 	}
 
+	// The credentials left the disk once the proxy had started.
+	if _, err := os.Stat(filepath.Join(res.RunDir, "proxy.env")); !os.IsNotExist(err) {
+		t.Errorf("the proxy's credentials file is still on disk: %v", err)
+	}
+
 	patch, err := os.ReadFile(filepath.Join(res.OutDir, "changes.patch"))
 	if err != nil {
 		t.Fatal(err)
