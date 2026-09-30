@@ -55,7 +55,7 @@ func checkForbidden(t *testing.T, args []string) {
 				t.Errorf("forbidden option %q in %v", a, args)
 			}
 		}
-		if strings.Contains(a, "unconfined") || a == "host" {
+		if strings.Contains(a, "unconfined") || a == "host" || strings.Contains(a, "label=disable") || strings.Contains(a, "label:disable") {
 			t.Errorf("forbidden value %q in %v", a, args)
 		}
 	}
@@ -124,10 +124,10 @@ func TestArgsSeal(t *testing.T) {
 			t.Error("the agent must never receive an env file: credentials go to the proxy only")
 		}
 		wantMounts := map[string]bool{
-			readOnly(a.Plugin, PluginDir):               true,
-			readOnly(a.Repo, RepoDir):                   true,
-			readOnly(a.CACert, CACert):                  true,
-			"type=bind,src=" + a.Out + ",dst=" + OutDir: true,
+			"type=bind,src=" + a.Plugin + ",dst=" + PluginDir + ",readonly": true,
+			"type=bind,src=" + a.Repo + ",dst=" + RepoDir + ",readonly":     true,
+			"type=bind,src=" + a.CACert + ",dst=" + CACert + ",readonly":    true,
+			"type=bind,src=" + a.Out + ",dst=" + OutDir:                     true,
 		}
 		got := mounts(args)
 		if len(got) != len(wantMounts) {
@@ -216,5 +216,39 @@ func TestAgentTTY(t *testing.T) {
 	image := slices.Index(args, a.Image)
 	if !slices.Contains(args[:image], "--interactive") || !slices.Contains(args[:image], "--tty") {
 		t.Error("an agent on the user's terminal must get --interactive and --tty before its image")
+	}
+}
+
+// TestRelabel checks the SELinux labels of every mount with Podman: private
+// to the container, except the CA certificate that both containers read.
+func TestRelabel(t *testing.T) {
+	p := testProxy(t)
+	p.Relabel = true
+	pargs, err := p.RunArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testAgent(t)
+	a.Relabel = true
+	aargs, err := a.RunArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{pargs, aargs} {
+		checkForbidden(t, args)
+		for _, m := range mounts(args) {
+			want := ",relabel=private"
+			if strings.Contains(m, "dst="+CACert+",") || strings.Contains(m, "dst=/etc/sealroom/ca.crt,") {
+				want = ",relabel=shared"
+			}
+			if !strings.HasSuffix(m, want) {
+				t.Errorf("mount %q, want it to end with %q", m, want)
+			}
+		}
+	}
+	for _, m := range mounts(aargs) {
+		if strings.Contains(m, "dst="+OutDir) && strings.Contains(m, "readonly") {
+			t.Errorf("the output directory must stay writable: %q", m)
+		}
 	}
 }

@@ -63,6 +63,7 @@ type Proxy struct {
 	CAKey    string // host path of the run's CA key
 	EnvFile  string // host path of the credentials, read by the proxy only
 	Outbound string // the network that reaches the internet
+	Relabel  bool   // Podman: label the mounted files for SELinux
 }
 
 // RunArgs returns the arguments that start the proxy on the internal network.
@@ -85,9 +86,9 @@ func (p Proxy) RunArgs() ([]string, error) {
 		"--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
 		"--memory", Memory, "--cpus", CPUs, "--pids-limit", PidsLimit,
 		"--env-file", p.EnvFile,
-		"--mount", readOnly(p.Config, "/etc/sealroom/proxy.yaml"),
-		"--mount", readOnly(p.CACert, "/etc/sealroom/ca.crt"),
-		"--mount", readOnly(p.CAKey, "/etc/sealroom/ca.key"),
+		"--mount", bind(p.Config, "/etc/sealroom/proxy.yaml", true, label(p.Relabel, private)),
+		"--mount", bind(p.CACert, "/etc/sealroom/ca.crt", true, label(p.Relabel, shared)),
+		"--mount", bind(p.CAKey, "/etc/sealroom/ca.key", true, label(p.Relabel, private)),
 		p.Image,
 		"-config", "/etc/sealroom/proxy.yaml",
 	}
@@ -115,6 +116,8 @@ type Agent struct {
 	// TTY attaches the agent to the user's terminal. Without it, the agent
 	// runs with no input, as in tests.
 	TTY bool
+	// Relabel, with Podman, labels the mounted files for SELinux.
+	Relabel bool
 }
 
 // allowedEnv lists the environment variables the agent may receive. Every
@@ -151,10 +154,10 @@ func (a Agent) RunArgs() ([]string, error) {
 		"--tmpfs", "/tmp",
 		"--tmpfs", "/home/agent:mode=1777",
 		"--tmpfs", WorkDir + ":mode=1777",
-		"--mount", readOnly(a.Plugin, PluginDir),
-		"--mount", readOnly(a.Repo, RepoDir),
-		"--mount", readOnly(a.CACert, CACert),
-		"--mount", fmt.Sprintf("type=bind,src=%s,dst=%s", a.Out, OutDir),
+		"--mount", bind(a.Plugin, PluginDir, true, label(a.Relabel, private)),
+		"--mount", bind(a.Repo, RepoDir, true, label(a.Relabel, private)),
+		"--mount", bind(a.CACert, CACert, true, label(a.Relabel, shared)),
+		"--mount", bind(a.Out, OutDir, false, label(a.Relabel, private)),
 		// Claude Code, curl and git trust the proxy's CA, and nothing else.
 		"--env", "NODE_EXTRA_CA_CERTS=" + CACert,
 		"--env", "SSL_CERT_FILE=" + CACert,
@@ -181,8 +184,33 @@ func (a Agent) RunArgs() ([]string, error) {
 	return append(args, a.Command...), nil
 }
 
-func readOnly(src, dst string) string {
-	return fmt.Sprintf("type=bind,src=%s,dst=%s,readonly", src, dst)
+// SELinux labels for Podman's relabel mount option. Relabeling changes the
+// labels of the files on the host, so only files of the run directory are
+// ever mounted: never the user's own.
+const (
+	// private: only this container can read the files.
+	private = "private"
+	// shared: every container that mounts them can, for the run's CA
+	// certificate, which the proxy and the agent both read.
+	shared = "shared"
+)
+
+func label(relabel bool, kind string) string {
+	if relabel {
+		return kind
+	}
+	return ""
+}
+
+func bind(src, dst string, readOnly bool, relabel string) string {
+	m := fmt.Sprintf("type=bind,src=%s,dst=%s", src, dst)
+	if readOnly {
+		m += ",readonly"
+	}
+	if relabel != "" {
+		m += ",relabel=" + relabel
+	}
+	return m
 }
 
 // checkHostPath refuses a path that is not absolute and clean, or that would
