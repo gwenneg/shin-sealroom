@@ -53,6 +53,16 @@ type Run struct {
 	Claude  ClaudeAuth // how the user reaches Claude
 	// With Vertex, the only project and region the model may be reached in.
 	VertexProject, VertexRegion string
+	// Declared is what the plugin declares it needs and the user accepted,
+	// validated by internal/declare. It only adds allowed requests: no
+	// credential is ever added to them.
+	Declared []Allow
+}
+
+// Allow is one kind of request the plugin declared.
+type Allow struct {
+	Host           string
+	Methods, Paths []string
 }
 
 var (
@@ -196,6 +206,9 @@ func Config(r Run) ([]byte, error) {
 				"rules":   []rule{{Host: "api.anthropic.com"}},
 			}},
 		)
+	}
+	for _, d := range r.Declared {
+		allow = append(allow, rule{Host: d.Host, Methods: d.Methods, Paths: d.Paths})
 	}
 	transforms[0].Config = map[string]any{"rules": allow}
 

@@ -371,3 +371,30 @@ func TestEnvFileVertex(t *testing.T) {
 		t.Errorf("env file %q, want the GitHub token and the path of the Google credentials", got)
 	}
 }
+
+// TestConfigDeclared: what a plugin declares is only ever allowed, never
+// given a credential or kept from the header rules.
+func TestConfigDeclared(t *testing.T) {
+	declared := []Allow{
+		{Host: "api.example.com", Methods: []string{"GET"}, Paths: []string{"/v1/*"}},
+		{Host: "github.com", Methods: []string{"GET", "POST"}, Paths: []string{"/o/r.git/info/refs", "/o/r.git/git-upload-pack"}},
+	}
+	for _, auth := range []ClaudeAuth{Subscription, Vertex} {
+		cfg, _ := parse(t, Run{ProxyIP: "172.30.0.2", Repo: "owner/repo", Claude: auth, VertexProject: "my-project", VertexRegion: "us-east5", Declared: declared})
+		var allow struct{ Rules []parsedRule }
+		json.Unmarshal(cfg.Transforms[0].Config, &allow)
+		for _, d := range declared {
+			if !slices.ContainsFunc(allow.Rules, func(r parsedRule) bool {
+				return r.Host == d.Host && slices.Equal(r.Methods, d.Methods) && slices.Equal(r.Paths, d.Paths)
+			}) {
+				t.Errorf("%s is not allowed", d.Host)
+			}
+		}
+		for _, tr := range cfg.Transforms[1:] {
+			raw := string(tr.Config)
+			if strings.Contains(raw, "api.example.com") || strings.Contains(raw, "/o/r.git") {
+				t.Errorf("%s mentions a declared access: %s", tr.Name, raw)
+			}
+		}
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gwenneg/sealroom/internal/container"
+	"github.com/gwenneg/sealroom/internal/declare"
 	"github.com/gwenneg/sealroom/internal/proxy"
 	"github.com/gwenneg/sealroom/internal/publish"
 	"github.com/gwenneg/sealroom/internal/review"
@@ -92,6 +93,16 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 		return res, fmt.Errorf("copying the plugin: %w", err)
 	}
 
+	// What the plugin declares it needs, read from Sealroom's copy, shown to
+	// the user, and allowed only on their yes.
+	declared, err := declare.Read(pluginCopy)
+	if err != nil {
+		return res, fmt.Errorf("the plugin's declaration: %w", err)
+	}
+	if len(declared.Network) > 0 && !acceptDeclared(declared, term) {
+		return res, errors.New("the plugin's declared access was not accepted")
+	}
+
 	src := filepath.Join(runDir, "src")
 	clone := exec.Command("git", "clone", "--quiet", "https://github.com/"+opts.Repo, src)
 	clone.Stdout, clone.Stderr = term.Err, term.Err
@@ -110,7 +121,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	}
 	defer rt.Run("network", "rm", outbound)
 
-	if err := writeProxyFiles(runDir, ip, opts.Repo, creds); err != nil {
+	if err := writeProxyFiles(runDir, ip, opts.Repo, creds, declared); err != nil {
 		return res, err
 	}
 	// The copy of the user's Google credentials leaves the disk with the run.
@@ -163,6 +174,17 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	defer signal.Reset(os.Interrupt)
 	res.ExitCode, err = rt.Interactive(term.In, term.Out, term.Err, args...)
 	return res, err
+}
+
+// acceptDeclared shows what the plugin declares it needs, sanitised, and asks
+// the user whether to allow it for this run.
+func acceptDeclared(d declare.Declaration, term Terminal) bool {
+	fmt.Fprintln(term.Out, "=== The plugin asks for more network access than Sealroom allows by default ===")
+	for _, a := range d.Network {
+		fmt.Fprintf(term.Out, "- %s %s%s\n  why: %s\n", strings.Join(a.Methods, ","), a.Host, review.Sanitize(strings.Join(a.Paths, ", "+a.Host)), review.Sanitize(a.Why))
+	}
+	fmt.Fprintln(term.Out, "No credential of yours is ever added to these requests, and what the plugin sends there leaves your machine.")
+	return ask(bufio.NewReader(term.In), term.Out, "Allow this for this run? [y/N] ")
 }
 
 // relabel reports whether the mounts get SELinux labels: with Podman, which
@@ -278,8 +300,11 @@ func makeRunDir(id string) (string, error) {
 // runs as its own user, so the files it reads are readable by all; the run
 // directory around them is the user's alone. The credentials file is read
 // by the runtime's command line, as the user.
-func writeProxyFiles(dir, ip, repo string, creds Credentials) error {
+func writeProxyFiles(dir, ip, repo string, creds Credentials, declared declare.Declaration) error {
 	run := proxy.Run{ProxyIP: ip, Repo: repo, Claude: creds.ClaudeAuth}
+	for _, a := range declared.Network {
+		run.Declared = append(run.Declared, proxy.Allow{Host: a.Host, Methods: a.Methods, Paths: a.Paths})
+	}
 	if creds.ClaudeAuth == proxy.Vertex {
 		if creds.Vertex == nil {
 			return errors.New("Vertex without a project, a region and credentials")
