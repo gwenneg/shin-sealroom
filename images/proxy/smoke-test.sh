@@ -19,12 +19,16 @@ $runtime run --detach --pull never --name "$name" --read-only --cap-drop ALL \
   --mount "type=bind,src=$dir/ca.crt,dst=/etc/sealroom/ca.crt,readonly" \
   --mount "type=bind,src=$dir/ca.key,dst=/etc/sealroom/ca.key,readonly" \
   "$image" -config /etc/sealroom/proxy.yaml >/dev/null
+# The logs are read whole before searching: with pipefail, grep -q closing
+# the pipe early would fail the pipeline even when the line is there.
+logs=
 for _ in $(seq 20); do
-  $runtime logs "$name" 2>&1 | grep -q 'https proxy starting' && break
+  logs=$($runtime logs "$name" 2>&1)
+  grep -q 'https proxy starting' <<<"$logs" && break
   sleep 0.5
 done
 for listener in 'dns server starting' 'https proxy starting' 'http proxy starting'; do
-  $runtime logs "$name" 2>&1 | grep -q "$listener" || { echo "missing: $listener"; $runtime logs "$name"; exit 1; }
+  grep -q "$listener" <<<"$logs" || { echo "missing: $listener"; echo "$logs"; exit 1; }
 done
 # A request through the proxy, from inside its own network namespace, must be refused.
 code=$($runtime run --rm --pull never --network "container:$name" \
