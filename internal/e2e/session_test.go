@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,6 +38,10 @@ func TestSession(t *testing.T) {
 	if err := os.Mkdir(plugin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The review applies the session's commit with the host's git.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_COMMITTER_NAME", "e2e")
+	t.Setenv("GIT_COMMITTER_EMAIL", "e2e@sealroom.invalid")
 	var log bytes.Buffer
 	res, err := launcher.Run(rt,
 		launcher.Options{Plugin: plugin, Repo: "octocat/Hello-World", ProxyImage: proxyImage, AgentImage: testImage},
@@ -71,6 +76,24 @@ func TestSession(t *testing.T) {
 		if !strings.Contains(string(patch), want+"\n") {
 			t.Errorf("the session did not see %q:\n%s", want, patch)
 		}
+	}
+
+	// The review, answering no to the full diff.
+	var shown bytes.Buffer
+	if err := launcher.Review(rt, res, testImage, launcher.Terminal{In: strings.NewReader("n\n"), Out: &shown, Err: &shown}); err != nil {
+		t.Fatalf("review: %v\n%s", err, &shown)
+	}
+	for _, want := range []string{"Record what the sealed session saw", "Title: Sealed session results", "Base:  master", "nothing was pushed"} {
+		if !strings.Contains(shown.String(), want) {
+			t.Errorf("the review did not show %q:\n%s", want, &shown)
+		}
+	}
+	src := filepath.Join(res.RunDir, "src")
+	if b, err := exec.Command("git", "-C", src, "log", "-1", "--format=%s", "e2e-branch").Output(); err != nil || strings.TrimSpace(string(b)) != "Record what the sealed session saw" {
+		t.Errorf("the session's commit is not on e2e-branch in the host's clone: %q, %v", b, err)
+	}
+	if entries, err := os.ReadDir(res.OutDir); err != nil || len(entries) != 0 {
+		t.Errorf("the output directory was not emptied: %v, %v", entries, err)
 	}
 
 	id := filepath.Base(res.RunDir)

@@ -10,3 +10,11 @@ probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
   echo "credential-variables=$(env | grep -cE '^[A-Z_]*(TOKEN|KEY)=' )"
   echo "placeholders=$(env | grep -cE '^[A-Z_]*(TOKEN|KEY)=sealroom-placeholder$')"
 } > sealroom-e2e.txt
+# Then as a plugin would: a commit on a branch, a push and a pull request,
+# which the stand-ins record for the review on the host.
+git switch -q -c e2e-branch
+git add sealroom-e2e.txt
+git -c user.name=e2e -c user.email=e2e@sealroom.invalid commit -q -m "Record what the sealed session saw"
+git push -q origin e2e-branch
+gh pr create --title "Sealed session results" --body "What the session saw" --base master
+

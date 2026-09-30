@@ -234,3 +234,35 @@ func checkHostPath(path string) error {
 	}
 	return nil
 }
+
+// Cleanup describes the container that empties the output directory after
+// the review. What the agent wrote there belongs to the agent's user on
+// Linux, or to a subordinate user with rootless Podman, so the user cannot
+// remove it directly. It runs as the agent's user, with no network.
+type Cleanup struct {
+	Name    string
+	Image   string // the agent image
+	Out     string // host path of the output directory
+	Relabel bool   // Podman: label the mount for SELinux
+}
+
+// RunArgs returns the arguments that empty the output directory.
+func (c Cleanup) RunArgs() ([]string, error) {
+	if err := checkHostPath(c.Out); err != nil {
+		return nil, err
+	}
+	return []string{
+		"run", "--rm", "--pull", "never",
+		"--name", c.Name,
+		"--network", "none",
+		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--user", fmt.Sprintf("%d:%d", AgentUID, AgentGID),
+		"--memory", Memory, "--cpus", CPUs, "--pids-limit", PidsLimit,
+		"--mount", bind(c.Out, OutDir, false, label(c.Relabel, private)),
+		"--entrypoint", "/usr/bin/find",
+		c.Image,
+		OutDir, "-mindepth", "1", "-delete",
+	}, nil
+}

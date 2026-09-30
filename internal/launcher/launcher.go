@@ -4,6 +4,7 @@
 package launcher
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gwenneg/sealroom/internal/container"
 	"github.com/gwenneg/sealroom/internal/proxy"
+	"github.com/gwenneg/sealroom/internal/review"
 	"github.com/gwenneg/sealroom/internal/sandbox"
 )
 
@@ -290,4 +292,54 @@ func waitListening(rt container.Runtime, name string) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return errors.New("the proxy did not start listening in time")
+}
+
+// Review applies what the session changed to a branch of the host's clone,
+// shows it to the user, and empties the output directory. Nothing is pushed.
+func Review(rt container.Runtime, res Result, agentImage string, term Terminal) error {
+	defer emptyOutput(rt, res, agentImage, term)
+	out, err := review.Read(res.OutDir)
+	if err != nil {
+		return fmt.Errorf("reading the session's output: %w", err)
+	}
+	if len(out.Patch) == 0 {
+		fmt.Fprintln(term.Err, "sealroom: the session changed nothing.")
+		return nil
+	}
+	src := filepath.Join(res.RunDir, "src")
+	branch, err := review.Apply(src, out, "sealroom/"+filepath.Base(res.RunDir))
+	if err != nil {
+		return err
+	}
+	if err := review.Show(term.Out, src, branch, out.PR); err != nil {
+		return err
+	}
+	answers := bufio.NewReader(term.In)
+	if ask(answers, term.Out, "Show the full diff? [y/N] ") {
+		if err := review.Diff(term.Out, src); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(term.Err, "sealroom: nothing was pushed. The branch %s is in %s.\n", review.Sanitize(branch), src)
+	return nil
+}
+
+func ask(in *bufio.Reader, out io.Writer, question string) bool {
+	fmt.Fprint(out, question)
+	line, _ := in.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
+}
+
+// emptyOutput removes what the agent wrote, through a container: on Linux it
+// belongs to the agent's user.
+func emptyOutput(rt container.Runtime, res Result, agentImage string, term Terminal) {
+	c := sandbox.Cleanup{Name: "sealroom-" + filepath.Base(res.RunDir) + "-cleanup", Image: agentImage, Out: res.OutDir, Relabel: relabel(rt)}
+	args, err := c.RunArgs()
+	if err == nil {
+		_, err = rt.Run(args...)
+	}
+	if err != nil {
+		fmt.Fprintf(term.Err, "sealroom: could not empty %s: %v\n", res.OutDir, err)
+	}
 }

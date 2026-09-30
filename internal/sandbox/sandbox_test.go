@@ -141,6 +141,30 @@ func TestArgsSeal(t *testing.T) {
 	})
 }
 
+func TestCleanupSeal(t *testing.T) {
+	c := Cleanup{Name: "sealroom-cleanup", Image: "agent@sha256:def", Out: filepath.Join(t.TempDir(), "out")}
+	args, err := c.RunArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkForbidden(t, args)
+	for _, w := range []string{"--pull never", "--network none", "--cap-drop ALL", "--security-opt no-new-privileges", "--user 10001:10001"} {
+		if !slices.Contains(pairs(args), w) {
+			t.Errorf("cleanup is missing %q", w)
+		}
+	}
+	if !slices.Contains(args, "--read-only") {
+		t.Error("cleanup root must be read-only")
+	}
+	if got := mounts(args); len(got) != 1 || got[0] != "type=bind,src="+c.Out+",dst="+OutDir {
+		t.Errorf("cleanup mounts %v, want the output directory alone", got)
+	}
+	c.Out = "/"
+	if _, err := c.RunArgs(); err == nil {
+		t.Error("cleanup accepted the root directory")
+	}
+}
+
 func mounts(args []string) []string {
 	var out []string
 	for i, a := range args {

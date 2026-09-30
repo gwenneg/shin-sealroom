@@ -11,7 +11,7 @@ Sealroom runs untrusted plugins with the user's credentials within reach of a pr
 - No credential ever enters the agent container, not even short-lived. The proxy adds credentials; the agent holds placeholders.
 - The agent container has no route out except the proxy, no capabilities, a read-only root, and nothing from the host but the plugin and the repository read-only, the proxy's CA certificate, and the output directory.
 - The container never pushes. The push and the pull request happen on the host, after the user's yes.
-- Everything the agent container writes is untrusted input on the host: validated, size-limited, never executed, and never allowed to pick the target repository.
+- Everything the agent container writes is untrusted input on the host: validated, size-limited, never executed, and never allowed to pick the target repository. Only `internal/review` reads it, and every string from it goes through `review.Sanitize` before reaching the terminal.
 - Container restrictions live only in `internal/sandbox`, and `TestArgsSeal` pins them. Never weaken the test to make a change pass.
 - The proxy's rules live only in `internal/proxy`, pinned by `TestConfigRules` and, against the real proxy and services, by `TestProxyRules`. Never weaken either to make a change pass.
 - The proxy is built from a verified release commit, never taken from a published image or binary. [docs/development.md](../docs/development.md) has the steps to move to a new release.

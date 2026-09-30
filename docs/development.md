@@ -7,6 +7,7 @@
 | `cmd/sealroom/` | The entry point, nothing else |
 | `internal/cli/` | Command-line parsing and dispatch, and the exit codes; no launcher logic |
 | `internal/launcher/` | A sealed session: the run directory, the clone, the networks, the proxy, the agent on the user's terminal, and the cleanup |
+| `internal/review/` | Reads the session's output as untrusted input, applies it to the host's clone, and shows it, sanitised |
 | `internal/container/` | Finds Podman or Docker and runs its commands, with arguments from `internal/sandbox` only |
 | `images/agent/` | The agent image: Claude Code and the GitHub CLI, pinned by checksum, the `git` and `gh` stand-ins, the session script, and its smoke test |
 | `images/proxy/` | The proxy image: iron-proxy built from a pinned, verified commit, and its smoke test |
@@ -25,7 +26,7 @@ export CLAUDE_CODE_OAUTH_TOKEN=...   # from claude setup-token, or ANTHROPIC_API
 go run ./cmd/sealroom run <plugin-dir> --repo <owner/repo> --prompt '/<plugin>:<command>'
 ```
 
-The run directory is under the user's cache directory, printed at the start. `SEALROOM_RUNTIME` picks `podman` or `docker`; Podman comes first when both are installed. The review and the push after the session are not built yet: the session's changes stay in the run's `out` directory.
+The run directory is under the user's cache directory, printed at the start. `SEALROOM_RUNTIME` picks `podman` or `docker`; Podman comes first when both are installed. After the session, the launcher applies its changes to a branch of the run's clone and shows them. The push and the pull request are not built yet: the branch stays in the run's `src` directory.
 
 ## Checking on Fedora
 
