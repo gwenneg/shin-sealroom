@@ -7,7 +7,7 @@ Sealroom runs Claude Code with a third-party plugin or skill inside a container 
 No tool can promise that absolutely. The [threat model](docs/threat-model.md) lists what Sealroom defends against and what it cannot prevent: what the model sees can reach your own model provider, the pull request you approve is a way out, and the containers share a kernel with your machine. Read it before relying on Sealroom.
 
 > [!WARNING]
-> Sealroom is early and not released. The design and the threat model come first, on purpose: a tool that asks for your trust has to show its reasoning before its code.
+> Sealroom is early and not released, and has not had an independent security review. The design and the threat model come first, on purpose: a tool that asks for your trust has to show its reasoning before its code. What must happen before a 1.0 is listed in [the proxy's specification](docs/proxy.md#before-10).
 
 ## Why
 
@@ -31,6 +31,8 @@ Sealroom is a personal open source project, maintained on a best-effort basis an
 
 - [Design](docs/design.md): how Sealroom works and the decisions behind it.
 - [Threat model](docs/threat-model.md): what Sealroom defends against, what it trusts, and its limits.
+- [The proxy](docs/proxy.md): the specification of the agent's only way out.
+- [Proxies considered](docs/proxy-alternatives.md): the options weighed before Sealroom built its own, and why none was chosen.
 - [Development](docs/development.md): the layout and the commands to build and test.
 - [Security policy](SECURITY.md): how to report a vulnerability.
 

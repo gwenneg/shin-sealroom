@@ -14,6 +14,8 @@ Sealroom is a personal open source project, maintained on a best-effort basis. T
 
 Only the latest version on `main` is supported.
 
+Sealroom has not had an independent security review. Before a 1.0 release, its proxy goes through adversarial red-teaming, fuzzing, differential testing and, if a reviewer can be found, an independent review: see [Before 1.0](docs/proxy.md#before-10).
+
 ## In scope
 
 Anything that breaks what the [threat model](docs/threat-model.md) says Sealroom defends against, for example:
@@ -26,4 +28,4 @@ Anything that breaks what the [threat model](docs/threat-model.md) says Sealroom
 
 ## Out of scope
 
-The limits the threat model names, such as the model channel, the content of a pull request the user approves, and a kernel exploit, unless Sealroom makes them worse than described. Flaws in iron-proxy, Podman, Docker or Claude Code themselves belong to those projects; tell them, and tell Sealroom too if Sealroom can mitigate the flaw.
+The limits the threat model names, such as the model channel, the content of a pull request the user approves, and a kernel exploit, unless Sealroom makes them worse than described. Flaws in Podman, Docker, Go or Claude Code themselves belong to those projects; tell them, and tell Sealroom too if Sealroom can mitigate the flaw.

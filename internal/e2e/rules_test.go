@@ -88,7 +88,11 @@ func TestProxyRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, keyPEM, err := proxy.NewCA(time.Now())
+	hosts, err := proxy.Hosts(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, keyPEM, err := proxy.NewCA(time.Now(), hosts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +132,7 @@ func TestProxyRules(t *testing.T) {
 	must(t, args...)
 	t.Cleanup(func() { exec.Command(runtime(), "rm", "-f", p.Name).Run() })
 	must(t, p.ConnectArgs()...)
-	for i := 0; i < 40 && !strings.Contains(must(t, "logs", p.Name), "https proxy starting"); i++ {
+	for i := 0; i < 40 && !strings.Contains(must(t, "logs", p.Name), "sealroom proxy listening"); i++ {
 		time.Sleep(250 * time.Millisecond)
 	}
 
@@ -141,7 +145,9 @@ func TestProxyRules(t *testing.T) {
 			"--mount", "type=bind,src=" + p.CACert + ",dst=/ca.crt,readonly" + probeLabel(), CurlImage,
 			"-s", "-o", "/dev/null", "--cacert", "/ca.crt", "--max-time", "30",
 			"-w", "%{http_code} %header{x-github-request-id}%header{request-id}%header{cf-ray}"}, curlArgs...)
-		out := strings.Fields(must(t, args...))
+		// curl fails when a handshake is refused; its status is then 000.
+		b, _ := exec.Command(runtime(), args...).Output()
+		out := strings.Fields(string(b))
 		if len(out) == 0 {
 			t.Fatalf("no answer to %v", curlArgs)
 		}
@@ -151,7 +157,7 @@ func TestProxyRules(t *testing.T) {
 	placeholder := "authorization: Bearer " + sandbox.Placeholder
 	message := `{"model":"claude-haiku-4-5-20251001","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`
 	claude := []string{"-H", "anthropic-version: 2023-06-01", "-H", "content-type: application/json", "-d", message}
-	const refused, withCredential, withoutCredential = "refused", "credential added", "no credential"
+	const refused, handshakeRefused, withCredential, withoutCredential = "refused", "handshake refused", "credential added", "no credential"
 	tests := []struct {
 		name string
 		want string
@@ -159,34 +165,38 @@ func TestProxyRules(t *testing.T) {
 	}{
 		{"the model, with the placeholder", withCredential, append([]string{"https://api.anthropic.com/v1/messages", "-H", placeholder}, claude...)},
 		{"the model, with a key of its own", refused, append([]string{"https://api.anthropic.com/v1/messages", "-H", "authorization: Bearer sk-ant-attacker"}, claude...)},
-		{"the model, with the placeholder and a key of its own", withCredential, append([]string{"https://api.anthropic.com/v1/messages", "-H", placeholder, "-H", "x-api-key: sk-ant-attacker"}, claude...)},
+		{"the model, with the placeholder and a key of its own", refused, append([]string{"https://api.anthropic.com/v1/messages", "-H", placeholder, "-H", "x-api-key: sk-ant-attacker"}, claude...)},
 		{"the Files API", refused, []string{"-X", "POST", "https://api.anthropic.com/v1/files", "-H", placeholder}},
 		{"a read on the run's repository", withCredential, []string{"https://api.github.com/repos/" + runRepo}},
 		{"a read on another repository", withoutCredential, []string{"https://api.github.com/repos/" + otherRepo}},
-		{"a read on another repository, with a token of its own", withoutCredential, []string{"https://api.github.com/repos/" + otherRepo, "-H", "authorization: Bearer ghp_attacker"}},
+		{"a read on another repository, with a token of its own", refused, []string{"https://api.github.com/repos/" + otherRepo, "-H", "authorization: Bearer ghp_attacker"}},
 		{"a write on the run's repository", refused, []string{"-X", "POST", "https://api.github.com/repos/" + runRepo + "/issues", "-d", "{}"}},
 		{"GraphQL", refused, []string{"-X", "POST", "https://api.github.com/graphql", "-d", "{}"}},
 		{"a git fetch of the run's repository", withCredential, []string{"https://github.com/" + runRepo + "/info/refs?service=git-upload-pack"}},
 		{"a git fetch of another repository", refused, []string{"https://github.com/" + otherRepo + "/info/refs?service=git-upload-pack"}},
 		{"a git push to the run's repository", refused, []string{"-X", "POST", "https://github.com/" + runRepo + "/git-receive-pack"}},
-		{"another host", refused, []string{"https://example.com/"}},
+		{"another host", handshakeRefused, []string{"--resolve", "example.com:443:" + p.IP, "https://example.com/"}},
 	}
 	// The declared access, judged from the proxy's own log: example.org
 	// sets neither request ID.
 	probe(t, "https://example.org/")
 	probe(t, "https://example.org/undeclared")
-	decisions := rejections(t, must(t, "logs", p.Name))
-	if got, ok := decisions["example.org/"]; !ok || got != "" {
+	logged := decisions(t, must(t, "logs", p.Name))
+	if got, ok := logged["example.org/"]; !ok || got != "" {
 		t.Errorf("the declared access was %q, want it allowed", got)
 	}
-	if got := decisions["example.org/undeclared"]; got != "allowlist" {
-		t.Errorf("an undeclared path of a declared host was %q, want refused by the allowlist", got)
+	if got := logged["example.org/undeclared"]; got != "no-rule" {
+		t.Errorf("an undeclared path of a declared host was %q, want refused for no rule", got)
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			code, upstream := probe(t, tt.args...)
 			switch tt.want {
+			case handshakeRefused:
+				if code != "000" || upstream {
+					t.Errorf("got %s (from the service: %v), want the handshake refused", code, upstream)
+				}
 			case refused:
 				if code != "403" || upstream {
 					t.Errorf("got %s (from the service: %v), want a refusal by the proxy", code, upstream)

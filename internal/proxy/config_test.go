@@ -2,199 +2,118 @@ package proxy
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gwenneg/sealroom/internal/egress"
 	"github.com/gwenneg/sealroom/internal/sandbox"
 )
 
-type parsedRule struct {
-	Host    string   `json:"host"`
-	Methods []string `json:"methods"`
-	Paths   []string `json:"paths"`
-}
-
-type parsedSecret struct {
-	Source  struct{ Type, Var string } `json:"source"`
-	Replace *struct {
-		ProxyValue   string   `json:"proxy_value"`
-		MatchHeaders []string `json:"match_headers"`
-		Require      bool     `json:"require"`
-	} `json:"replace"`
-	Inject *struct{ Header, Formatter string } `json:"inject"`
-	Rules  []parsedRule                        `json:"rules"`
-}
-
-type parsedConfig struct {
-	DNS        map[string]any `json:"dns"`
-	Proxy      map[string]any `json:"proxy"`
-	Metrics    map[string]any `json:"metrics"`
-	TLS        map[string]any `json:"tls"`
-	Transforms []struct {
-		Name   string          `json:"name"`
-		Config json.RawMessage `json:"config"`
-	} `json:"transforms"`
-}
-
-func parse(t *testing.T, r Run) (parsedConfig, map[string]any) {
+func rules(t *testing.T, r Run) egress.Config {
 	t.Helper()
 	b, err := Config(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cfg parsedConfig
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	var cfg egress.Config
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(b, &raw); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	return cfg, raw
-}
-
-func transformsNamed(t *testing.T, cfg parsedConfig, name string) []json.RawMessage {
-	var out []json.RawMessage
-	for _, tr := range cfg.Transforms {
-		if tr.Name == name {
-			out = append(out, tr.Config)
-		}
-	}
-	return out
+	return cfg
 }
 
 // TestConfigRules pins what the agent can reach and where the user's
-// credentials may be added. It must only ever change together with the
-// design and the threat model.
+// credentials are added. It must only ever change together with the design,
+// the threat model and docs/proxy.md.
 func TestConfigRules(t *testing.T) {
-	for _, auth := range []ClaudeAuth{Subscription, APIKey} {
-		header, other := "Authorization", "X-Api-Key"
-		if auth == APIKey {
-			header, other = other, header
+	for _, auth := range []ClaudeAuth{Subscription, APIKey, Vertex} {
+		cfg := rules(t, Run{ProxyIP: "10.0.0.2", Repo: "owner/repo", Claude: auth, VertexProject: "my-project", VertexRegion: "us-east5"})
+		if cfg.Placeholder != sandbox.Placeholder {
+			t.Errorf("placeholder %q", cfg.Placeholder)
 		}
-		t.Run(header, func(t *testing.T) {
-			cfg, raw := parse(t, Run{ProxyIP: "172.30.0.2", Repo: "owner/repo", Claude: auth})
-
-			for key := range raw {
-				if !slices.Contains([]string{"dns", "proxy", "metrics", "tls", "transforms"}, key) {
-					t.Errorf("unexpected top-level section %q: management, control plane and others stay off", key)
-				}
+		firstAnonymous := -1
+		for i, r := range cfg.Rules {
+			switch {
+			case r.Host == "api.github.com" && r.Method != "GET" && r.Method != "HEAD":
+				t.Errorf("a write on the GitHub API: %+v", r)
+			case strings.Contains(r.Path, "receive-pack"):
+				t.Errorf("a push: %+v", r)
+			case r.Host == "api.anthropic.com" && auth == Vertex:
+				t.Errorf("the Anthropic API with Vertex: %+v", r)
+			case strings.HasSuffix(r.Host, "googleapis.com") && auth != Vertex:
+				t.Errorf("Google without Vertex: %+v", r)
 			}
-			if _, ok := cfg.Proxy["tunnel_listen"]; ok {
-				t.Error("the explicit tunnel listener must stay off")
-			}
-			if cfg.Metrics["listen"] != "127.0.0.1:9090" {
-				t.Errorf("metrics listen on %v, want the proxy's loopback", cfg.Metrics["listen"])
-			}
-
-			names := make([]string, len(cfg.Transforms))
-			for i, tr := range cfg.Transforms {
-				names[i] = tr.Name
-			}
-			wantOrder := []string{"allowlist", "header_allowlist", "secrets", "header_allowlist"}
-			if !slices.Equal(names, wantOrder) {
-				t.Fatalf("transforms %v, want %v: GitHub headers are dropped before credentials are added, the model API's after", names, wantOrder)
-			}
-
-			var allow struct {
-				Domains []string     `json:"domains"`
-				CIDRs   []string     `json:"cidrs"`
-				Rules   []parsedRule `json:"rules"`
-			}
-			if err := json.Unmarshal(cfg.Transforms[0].Config, &allow); err != nil {
-				t.Fatal(err)
-			}
-			if len(allow.Domains) > 0 || len(allow.CIDRs) > 0 {
-				t.Error("the allowlist must use method and path rules only, never whole domains or address ranges")
-			}
-			want := map[string]bool{"api.anthropic.com": true, "api.github.com": true, "raw.githubusercontent.com": true, "github.com": true}
-			for _, r := range allow.Rules {
-				if !want[r.Host] {
-					t.Errorf("host %q is allowed", r.Host)
-				}
-				if len(r.Methods) == 0 || len(r.Paths) == 0 {
-					t.Errorf("rule for %s allows every method or every path", r.Host)
-				}
-				for _, p := range r.Paths {
-					if r.Host == "api.anthropic.com" && strings.Contains(p, "files") {
-						t.Errorf("the Files API is reachable: %s", p)
-					}
-					if r.Host == "github.com" && !strings.HasPrefix(p, "/owner/repo") {
-						t.Errorf("github.com path %q is outside the run's repository", p)
-					}
-				}
-				if r.Host == "api.github.com" || r.Host == "raw.githubusercontent.com" {
-					for _, m := range r.Methods {
-						if m != "GET" && m != "HEAD" {
-							t.Errorf("%s allows %s", r.Host, m)
-						}
-					}
-				}
-			}
-
-			var gh struct {
-				Headers []string     `json:"headers"`
-				Rules   []parsedRule `json:"rules"`
-			}
-			if err := json.Unmarshal(cfg.Transforms[1].Config, &gh); err != nil {
-				t.Fatal(err)
-			}
-			for _, h := range gh.Headers {
-				if strings.EqualFold(h, "Authorization") || strings.EqualFold(h, "X-Api-Key") || strings.HasPrefix(h, "/") {
-					t.Errorf("GitHub keeps the agent's header %q", h)
-				}
-			}
-
-			var secrets struct {
-				Secrets []parsedSecret `json:"secrets"`
-			}
-			if err := json.Unmarshal(cfg.Transforms[2].Config, &secrets); err != nil {
-				t.Fatal(err)
-			}
-			for _, s := range secrets.Secrets {
-				switch s.Source.Var {
-				case ClaudeCredentialEnv:
-					if s.Replace == nil || !s.Replace.Require || s.Replace.ProxyValue != sandbox.Placeholder {
-						t.Error("the Claude credential must replace the placeholder, and require it")
-					}
-					if s.Replace != nil && !slices.Equal(s.Replace.MatchHeaders, []string{header}) {
-						t.Errorf("the Claude credential goes in %v, want %s only", s.Replace.MatchHeaders, header)
-					}
-					if len(s.Rules) != 1 || s.Rules[0].Host != "api.anthropic.com" {
-						t.Errorf("the Claude credential can reach %v", s.Rules)
-					}
+			if c := r.Credential; c != nil {
+				switch c.Secret {
 				case GitHubTokenEnv:
-					for _, r := range s.Rules {
-						for _, p := range r.Paths {
-							if p != "/repos/owner/repo" && !strings.HasPrefix(p, "/repos/owner/repo/") && !strings.HasPrefix(p, "/owner/repo") {
-								t.Errorf("the GitHub token is added outside the run's repository: %s%s", r.Host, p)
-							}
-						}
-						if len(r.Paths) == 0 {
-							t.Errorf("the GitHub token is added on every path of %s", r.Host)
-						}
+					if !strings.HasPrefix(r.Path, "/repos/owner/repo") && !strings.HasPrefix(r.Path, "/owner/repo") {
+						t.Errorf("the GitHub token outside the run's repository: %s %s", r.Host, r.Path)
+					}
+					if firstAnonymous >= 0 {
+						t.Errorf("a rule with the GitHub token after an anonymous one, which would match first: %+v", r)
+					}
+				case ClaudeCredentialEnv:
+					want := egress.Credential{Secret: ClaudeCredentialEnv, Header: "Authorization", Scheme: "Bearer"}
+					if auth == APIKey {
+						want = egress.Credential{Secret: ClaudeCredentialEnv, Header: "X-Api-Key"}
+					}
+					if *c != want || r.Host != "api.anthropic.com" {
+						t.Errorf("the Claude credential as %+v on %s", c, r.Host)
+					}
+				case egress.Google:
+					if r.Host != "us-east5-aiplatform.googleapis.com" || r.Path != "/v1/projects/my-project/locations/us-east5/publishers/anthropic/models/*" {
+						t.Errorf("the Google token on %s %s", r.Host, r.Path)
 					}
 				default:
-					t.Errorf("unexpected secret %q", s.Source.Var)
+					t.Errorf("unknown secret %q", c.Secret)
+				}
+			} else if r.Host == "api.github.com" && firstAnonymous < 0 {
+				firstAnonymous = i
+			}
+			if r.Path == "/v1/messages" || strings.HasSuffix(r.Path, "/models/*") {
+				if !r.InspectMessages {
+					t.Errorf("model requests not inspected: %+v", r)
 				}
 			}
+		}
+	}
+	global := rules(t, Run{ProxyIP: "10.0.0.2", Repo: "o/r", Claude: Vertex, VertexProject: "my-project", VertexRegion: "global"})
+	if !slices.ContainsFunc(global.Rules, func(r egress.Rule) bool { return r.Host == "aiplatform.googleapis.com" }) {
+		t.Error("the global region does not use the global endpoint")
+	}
+}
 
-			var model struct {
-				Headers []string     `json:"headers"`
-				Rules   []parsedRule `json:"rules"`
+// TestConfigDeclared: what a plugin declares is allowed, and never given a
+// credential.
+func TestConfigDeclared(t *testing.T) {
+	cfg := rules(t, Run{ProxyIP: "10.0.0.2", Repo: "owner/repo", Declared: []Allow{
+		{Host: "api.example.com", Methods: []string{"GET"}, Paths: []string{"/v1/*"}},
+		{Host: "github.com", Methods: []string{"GET", "POST"}, Paths: []string{"/o/v.git/info/refs", "/o/v.git/git-upload-pack"}},
+	}})
+	found := 0
+	for _, r := range cfg.Rules {
+		if r.Host == "api.example.com" || strings.HasPrefix(r.Path, "/o/v.git") {
+			found++
+			if r.Credential != nil {
+				t.Errorf("a declared access with a credential: %+v", r)
 			}
-			if err := json.Unmarshal(cfg.Transforms[3].Config, &model); err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Contains(model.Headers, header) || slices.Contains(model.Headers, other) {
-				t.Errorf("the model API keeps %v, want %s and not %s", model.Headers, header, other)
-			}
-		})
+		}
+	}
+	if found != 5 {
+		t.Errorf("%d declared rules, want 5", found)
 	}
 }
 
@@ -224,11 +143,11 @@ func TestEnvFile(t *testing.T) {
 		t.Fatalf("env file has %d lines, want the two credentials", len(lines))
 	}
 	for _, l := range lines {
-		if strings.HasPrefix(l, "IRON_") || !strings.HasPrefix(l, "SEALROOM_") {
+		if !strings.HasPrefix(l, "SEALROOM_") {
 			t.Errorf("env file line %q", l)
 		}
 	}
-	for _, bad := range []string{"", "a\nIRON_MANAGEMENT_LISTEN=:1", "a\rb", "a\x00b"} {
+	for _, bad := range []string{"", "a\nSEALROOM_EXTRA=1", "a\rb", "a\x00b"} {
 		if _, err := EnvFile(Env{Claude: bad, GitHub: "ghp_x"}); err == nil {
 			t.Errorf("credential %q accepted", bad)
 		}
@@ -237,7 +156,7 @@ func TestEnvFile(t *testing.T) {
 
 func TestNewCA(t *testing.T) {
 	now := time.Now()
-	certPEM, keyPEM, err := NewCA(now)
+	certPEM, keyPEM, err := NewCA(now, []string{"api.example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,86 +182,9 @@ func TestNewCA(t *testing.T) {
 	if _, ok := key.(*ecdsa.PrivateKey); !ok {
 		t.Errorf("CA key is %T, want ECDSA", key)
 	}
-	other, _, _ := NewCA(now)
+	other, _, _ := NewCA(now, []string{"api.example.com"})
 	if string(other) == string(certPEM) {
 		t.Error("two runs got the same CA")
-	}
-}
-
-// TestConfigRulesVertex pins the rules with Vertex: Claude's models in the
-// user's project and region only, a Google token added there only, and no
-// Anthropic API at all.
-func TestConfigRulesVertex(t *testing.T) {
-	cfg, _ := parse(t, Run{ProxyIP: "172.30.0.2", Repo: "owner/repo", Claude: Vertex, VertexProject: "my-project", VertexRegion: "us-east5"})
-	names := make([]string, len(cfg.Transforms))
-	for i, tr := range cfg.Transforms {
-		names[i] = tr.Name
-	}
-	if want := []string{"allowlist", "header_allowlist", "header_allowlist", "gcp_auth", "secrets"}; !slices.Equal(names, want) {
-		t.Fatalf("transforms %v, want %v: headers dropped before the Google token is added", names, want)
-	}
-	model := parsedRule{
-		Host: "us-east5-aiplatform.googleapis.com", Methods: []string{"POST"},
-		Paths: []string{"/v1/projects/my-project/locations/us-east5/publishers/anthropic/models/*"},
-	}
-	var allow struct{ Rules []parsedRule }
-	json.Unmarshal(cfg.Transforms[0].Config, &allow)
-	found := false
-	for _, r := range allow.Rules {
-		if r.Host == "api.anthropic.com" {
-			t.Error("the Anthropic API is reachable with Vertex")
-		}
-		if strings.Contains(r.Host, "googleapis.com") {
-			found = true
-			if r.Host != model.Host || !slices.Equal(r.Methods, model.Methods) || !slices.Equal(r.Paths, model.Paths) {
-				t.Errorf("Google rule %+v, want %+v", r, model)
-			}
-		}
-	}
-	if !found {
-		t.Error("the model on Vertex is not allowed")
-	}
-
-	var headers struct {
-		Headers []string
-		Rules   []parsedRule
-	}
-	json.Unmarshal(cfg.Transforms[2].Config, &headers)
-	if len(headers.Rules) != 1 || headers.Rules[0].Host != model.Host {
-		t.Errorf("the model's header rules are %+v", headers.Rules)
-	}
-	for _, h := range headers.Headers {
-		l := strings.ToLower(h)
-		if l == "authorization" || l == "x-api-key" || strings.HasPrefix(l, "x-goog") {
-			t.Errorf("the agent's %q reaches Google", h)
-		}
-	}
-
-	var gcp struct {
-		CredentialsProvider struct{ Type string } `json:"credentials_provider"`
-		Scopes              []string
-		Rules               []parsedRule
-	}
-	json.Unmarshal(cfg.Transforms[3].Config, &gcp)
-	if gcp.CredentialsProvider.Type != "workload_identity" {
-		t.Errorf("credentials from %q, want the mounted Application Default Credentials", gcp.CredentialsProvider.Type)
-	}
-	if len(gcp.Rules) != 1 || gcp.Rules[0].Host != model.Host || !slices.Equal(gcp.Rules[0].Paths, model.Paths) {
-		t.Errorf("the Google token is added on %+v, want the model's paths alone", gcp.Rules)
-	}
-
-	var secrets struct{ Secrets []parsedSecret }
-	json.Unmarshal(cfg.Transforms[4].Config, &secrets)
-	for _, sec := range secrets.Secrets {
-		if sec.Source.Var != GitHubTokenEnv {
-			t.Errorf("secret %q with Vertex, want the GitHub token only", sec.Source.Var)
-		}
-	}
-
-	global, _ := parse(t, Run{ProxyIP: "172.30.0.2", Repo: "owner/repo", Claude: Vertex, VertexProject: "my-project", VertexRegion: "global"})
-	json.Unmarshal(global.Transforms[0].Config, &allow)
-	if !slices.ContainsFunc(allow.Rules, func(r parsedRule) bool { return r.Host == "aiplatform.googleapis.com" }) {
-		t.Error("the global region does not use the global endpoint")
 	}
 }
 
@@ -372,29 +214,33 @@ func TestEnvFileVertex(t *testing.T) {
 	}
 }
 
-// TestConfigDeclared: what a plugin declares is only ever allowed, never
-// given a credential or kept from the header rules.
-func TestConfigDeclared(t *testing.T) {
-	declared := []Allow{
-		{Host: "api.example.com", Methods: []string{"GET"}, Paths: []string{"/v1/*"}},
-		{Host: "github.com", Methods: []string{"GET", "POST"}, Paths: []string{"/o/r.git/info/refs", "/o/r.git/git-upload-pack"}},
+// TestCANameConstraints: a certificate the run's CA signs for a name outside
+// the run's hosts does not verify, whoever holds the key.
+func TestCANameConstraints(t *testing.T) {
+	certPEM, keyPEM, err := NewCA(time.Now(), []string{"api.example.com", "github.com"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, auth := range []ClaudeAuth{Subscription, Vertex} {
-		cfg, _ := parse(t, Run{ProxyIP: "172.30.0.2", Repo: "owner/repo", Claude: auth, VertexProject: "my-project", VertexRegion: "us-east5", Declared: declared})
-		var allow struct{ Rules []parsedRule }
-		json.Unmarshal(cfg.Transforms[0].Config, &allow)
-		for _, d := range declared {
-			if !slices.ContainsFunc(allow.Rules, func(r parsedRule) bool {
-				return r.Host == d.Host && slices.Equal(r.Methods, d.Methods) && slices.Equal(r.Paths, d.Paths)
-			}) {
-				t.Errorf("%s is not allowed", d.Host)
-			}
+	cb, _ := pem.Decode(certPEM)
+	ca, _ := x509.ParseCertificate(cb.Bytes)
+	kb, _ := pem.Decode(keyPEM)
+	key, _ := x509.ParsePKCS8PrivateKey(kb.Bytes)
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	for name, ok := range map[string]bool{"api.example.com": true, "github.com": true, "evil.example": false, "example.com": false} {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), DNSNames: []string{name}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &leafKey.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for _, tr := range cfg.Transforms[1:] {
-			raw := string(tr.Config)
-			if strings.Contains(raw, "api.example.com") || strings.Contains(raw, "/o/r.git") {
-				t.Errorf("%s mentions a declared access: %s", tr.Name, raw)
-			}
+		leaf, _ := x509.ParseCertificate(der)
+		_, err = leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: name})
+		if (err == nil) != ok {
+			t.Errorf("%s: verified %v, want %v (%v)", name, err == nil, ok, err)
 		}
+	}
+	if _, _, err := NewCA(time.Now(), nil); err == nil {
+		t.Error("a CA for no name was created")
 	}
 }

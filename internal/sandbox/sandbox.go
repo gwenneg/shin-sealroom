@@ -27,6 +27,18 @@ const (
 	WorkDir   = "/work"
 	OutDir    = "/out"
 	CACert    = "/etc/sealroom/ca.crt"
+	HostsDst  = "/etc/hosts"
+)
+
+// Hosts is the agent's /etc/hosts. The runtime's own would name the host
+// machine, host.containers.internal with rootless Podman, and resolve it
+// without asking the proxy's DNS.
+const Hosts = "127.0.0.1 localhost\n::1 localhost\n"
+
+// Paths inside the proxy container.
+const (
+	ProxyConfigDst = "/etc/sealroom/proxy.json"
+	CAKeyDst       = "/etc/sealroom/ca.key"
 )
 
 // GoogleCredentialsDst is where the proxy finds the user's Google
@@ -97,14 +109,15 @@ func (p Proxy) RunArgs() ([]string, error) {
 		"--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
 		"--memory", Memory, "--cpus", CPUs, "--pids-limit", PidsLimit,
 		"--env-file", p.EnvFile,
-		"--mount", bind(p.Config, "/etc/sealroom/proxy.yaml", true, label(p.Relabel, private)),
-		"--mount", bind(p.CACert, "/etc/sealroom/ca.crt", true, label(p.Relabel, shared)),
-		"--mount", bind(p.CAKey, "/etc/sealroom/ca.key", true, label(p.Relabel, private)),
+		"--mount", bind(p.Config, ProxyConfigDst, true, label(p.Relabel, private)),
+		"--mount", bind(p.CACert, CACert, true, label(p.Relabel, shared)),
+		"--mount", bind(p.CAKey, CAKeyDst, true, label(p.Relabel, private)),
 	}
 	if p.GoogleCredentials != "" {
 		args = append(args, "--mount", bind(p.GoogleCredentials, GoogleCredentialsDst, true, label(p.Relabel, private)))
 	}
-	return append(args, p.Image, "-config", "/etc/sealroom/proxy.yaml"), nil
+	// The image's entry point is the sealroom binary, in its proxy role.
+	return append(args, p.Image, "proxy", "--config", ProxyConfigDst, "--ca-cert", CACert, "--ca-key", CAKeyDst, "--ip", p.IP), nil
 }
 
 // ConnectArgs returns the arguments that attach the proxy to the outbound
@@ -122,6 +135,7 @@ type Agent struct {
 	Plugin  string // host path, mounted read-only
 	Repo    string // host path of the clone, mounted read-only and copied inside
 	CACert  string // host path of the run's CA certificate, public
+	Hosts   string // host path of the agent's /etc/hosts, holding Hosts
 	Out     string // host path of the output directory, the only writable mount
 	Env     map[string]string
 	Command []string
@@ -146,7 +160,7 @@ var credentialEnv = map[string]bool{"CLAUDE_CODE_OAUTH_TOKEN": true, "ANTHROPIC_
 
 // RunArgs returns the arguments that start the agent interactively.
 func (a Agent) RunArgs() ([]string, error) {
-	for _, path := range []string{a.Plugin, a.Repo, a.CACert, a.Out} {
+	for _, path := range []string{a.Plugin, a.Repo, a.CACert, a.Hosts, a.Out} {
 		if err := checkHostPath(path); err != nil {
 			return nil, err
 		}
@@ -169,6 +183,7 @@ func (a Agent) RunArgs() ([]string, error) {
 		"--mount", bind(a.Plugin, PluginDir, true, label(a.Relabel, private)),
 		"--mount", bind(a.Repo, RepoDir, true, label(a.Relabel, private)),
 		"--mount", bind(a.CACert, CACert, true, label(a.Relabel, shared)),
+		"--mount", bind(a.Hosts, HostsDst, true, label(a.Relabel, private)),
 		"--mount", bind(a.Out, OutDir, false, label(a.Relabel, private)),
 		// Claude Code, curl and git trust the proxy's CA, and nothing else.
 		"--env", "NODE_EXTRA_CA_CERTS=" + CACert,

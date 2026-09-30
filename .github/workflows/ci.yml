@@ -43,9 +43,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build the proxy image from source
-        run: docker build -t sealroom-proxy:ci images/proxy
-      - name: Start it sealed and check it refuses by default
+      - name: Build the proxy image from this repository
+        run: docker build -t sealroom-proxy:ci -f images/proxy/Dockerfile .
+      - name: Start it sealed and check it refuses what no rule allows
         run: |
           docker pull -q "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
           images/proxy/smoke-test.sh sealroom-proxy:ci
@@ -72,7 +72,7 @@ jobs:
           go-version-file: go.mod
       - name: Build both images
         run: |
-          docker build -t sealroom-proxy:dev images/proxy
+          docker build -t sealroom-proxy:dev -f images/proxy/Dockerfile .
           docker build -t sealroom-agent:dev images/agent
           docker pull -q "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
       - name: A run's rules and a whole session, against the real services
@@ -90,7 +90,7 @@ jobs:
       - name: Build both images with rootless Podman
         run: |
           podman version
-          podman build -t sealroom-proxy:dev images/proxy
+          podman build -t sealroom-proxy:dev -f images/proxy/Dockerfile .
           podman build -t sealroom-agent:dev images/agent
           podman pull -q "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
       - name: A run's rules and a whole session, with rootless Podman

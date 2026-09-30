@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/gwenneg/sealroom/internal/egress"
 )
 
 // FileName is the declaration's file, at the plugin's root.
@@ -42,7 +44,6 @@ type Declaration struct {
 
 var (
 	hostPattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
-	pathPattern = regexp.MustCompile(`^/[A-Za-z0-9/_.~*@:+-]{0,255}$`)
 	methods     = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
 )
 
@@ -127,8 +128,8 @@ func check(a Access) error {
 		}
 	}
 	for _, p := range a.Paths {
-		if !pathPattern.MatchString(p) || slices.Contains(strings.Split(p, "/"), "..") {
-			return fmt.Errorf("path %q must start with / and hold no dot-dot segment or unusual character", p)
+		if err := egress.CheckPathPattern(p); err != nil {
+			return fmt.Errorf("path %q: %v (letters, digits and -._~:@ in each segment, a * segment for exactly one segment, and a final ** for the rest)", p, err)
 		}
 	}
 	if slices.Contains(gitHubHosts, a.Host) {

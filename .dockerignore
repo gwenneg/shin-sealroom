@@ -1,0 +1,7 @@
+# Only what the proxy image's build needs reaches it.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
+internal/e2e

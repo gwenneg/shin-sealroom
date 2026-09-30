@@ -24,7 +24,7 @@ func testAgent(t *testing.T) Agent {
 	return Agent{
 		Name: "sealroom-agent", Image: "agent@sha256:def", Network: network, ProxyIP: "172.30.0.2",
 		Plugin: filepath.Join(dir, "plugin"), Repo: filepath.Join(dir, "src"),
-		CACert: filepath.Join(dir, "ca.crt"), Out: filepath.Join(dir, "out"),
+		CACert: filepath.Join(dir, "ca.crt"), Hosts: filepath.Join(dir, "hosts"), Out: filepath.Join(dir, "out"),
 		Env:     map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": Placeholder, "GH_TOKEN": Placeholder, "TERM": "xterm-256color"},
 		Command: []string{"claude"},
 	}
@@ -127,6 +127,7 @@ func TestArgsSeal(t *testing.T) {
 			"type=bind,src=" + a.Plugin + ",dst=" + PluginDir + ",readonly": true,
 			"type=bind,src=" + a.Repo + ",dst=" + RepoDir + ",readonly":     true,
 			"type=bind,src=" + a.CACert + ",dst=" + CACert + ",readonly":    true,
+			"type=bind,src=" + a.Hosts + ",dst=" + HostsDst + ",readonly":   true,
 			"type=bind,src=" + a.Out + ",dst=" + OutDir:                     true,
 		}
 		got := mounts(args)

@@ -34,7 +34,11 @@ func TestProxyRulesVertex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, keyPEM, err := proxy.NewCA(time.Now())
+	hosts, err := proxy.Hosts(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, keyPEM, err := proxy.NewCA(time.Now(), hosts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,62 +74,66 @@ func TestProxyRulesVertex(t *testing.T) {
 	must(t, args...)
 	t.Cleanup(func() { exec.Command(runtime(), "rm", "-f", p.Name).Run() })
 	must(t, p.ConnectArgs()...)
-	for i := 0; i < 40 && !strings.Contains(must(t, "logs", p.Name), "https proxy starting"); i++ {
+	for i := 0; i < 40 && !strings.Contains(must(t, "logs", p.Name), "sealroom proxy listening"); i++ {
 		time.Sleep(250 * time.Millisecond)
 	}
 
-	send := func(url string) {
+	// Every probe reaches the proxy, whatever DNS says, so the TLS
+	// handshake and the rules are what refuse.
+	send := func(host, path string) {
 		t.Helper()
-		must(t, "run", "--rm", "--pull", "never", "--network", internal.Name, "--dns", p.IP,
+		// curl fails when a handshake is refused: the log is what is checked.
+		exec.Command(runtime(), "run", "--rm", "--pull", "never", "--network", internal.Name, "--dns", p.IP,
+			"--add-host", host+":"+p.IP,
 			"--mount", "type=bind,src="+p.CACert+",dst=/ca.crt,readonly"+probeLabel(), CurlImage,
 			"-s", "-o", "/dev/null", "--cacert", "/ca.crt", "--max-time", "30", "-X", "POST", "-d", "{}",
-			"-H", "authorization: Bearer ya29.agent-own-token", url)
+			"https://"+host+path).Run()
 	}
 	model := "/v1/projects/" + project + "/locations/" + region + "/publishers/anthropic/models/claude-sonnet:streamRawPredict"
 	tests := []struct {
 		name, host, path, wantRejectedBy string
 	}{
-		{"the model in the user's project", region + "-aiplatform.googleapis.com", model, "gcp_auth"},
-		{"another project", region + "-aiplatform.googleapis.com", strings.Replace(model, project, "someone-else", 1), "allowlist"},
-		{"another region", "europe-west1-aiplatform.googleapis.com", strings.ReplaceAll(model, region, "europe-west1"), "allowlist"},
-		{"another publisher", region + "-aiplatform.googleapis.com", strings.Replace(model, "anthropic", "google", 1), "allowlist"},
-		{"Google's token endpoint", "oauth2.googleapis.com", "/token", "allowlist"},
-		{"the Anthropic API", "api.anthropic.com", "/v1/messages", "allowlist"},
+		// Every rule passed; the fake credentials cannot mint a token.
+		{"the model in the user's project", region + "-aiplatform.googleapis.com", model, "token-unavailable"},
+		{"another project", region + "-aiplatform.googleapis.com", strings.Replace(model, project, "someone-else", 1), "no-rule"},
+		{"another publisher", region + "-aiplatform.googleapis.com", strings.Replace(model, "anthropic", "google", 1), "no-rule"},
+		// No certificate for a name no rule allows.
+		{"another region", "europe-west1-aiplatform.googleapis.com", "", "tls-server-name"},
+		{"Google's token endpoint", "oauth2.googleapis.com", "", "tls-server-name"},
+		{"the Anthropic API", "api.anthropic.com", "", "tls-server-name"},
 	}
 	for _, tt := range tests {
-		send("https://" + tt.host + tt.path)
+		send(tt.host, tt.path)
 	}
 	logs := must(t, "logs", p.Name)
-	decisions := rejections(t, logs)
-	if len(decisions) == 0 {
-		t.Fatalf("no request in the proxy's log:\n%s", logs)
+	got := decisions(t, logs)
+	if len(got) == 0 {
+		t.Fatalf("no decision in the proxy's log:\n%s", logs)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := decisions[tt.host+tt.path]; got != tt.wantRejectedBy {
-				t.Errorf("rejected by %q, want %q", got, tt.wantRejectedBy)
+			if reason, ok := got[tt.host+tt.path]; !ok || reason != tt.wantRejectedBy {
+				t.Errorf("refused for %q (logged: %v), want %q", reason, ok, tt.wantRejectedBy)
 			}
 		})
 	}
 }
 
-// rejections maps each request of the proxy's log to the transform that
-// rejected it.
-func rejections(t *testing.T, logs string) map[string]string {
+// decisions maps what the proxy's audit log records to its reason: "" for
+// an allowed request. A request is keyed by its host and path; a refused
+// TLS handshake by its server name alone.
+func decisions(t *testing.T, logs string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	sc := bufio.NewScanner(strings.NewReader(logs))
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
-		var entry struct {
-			Audit struct {
-				Host string `json:"host"`
-				Path string `json:"path"`
-			} `json:"audit"`
-			RejectedBy string `json:"rejected_by"`
+		var e struct {
+			Decision, Reason, Host, Target string
 		}
-		if json.Unmarshal(sc.Bytes(), &entry) == nil && entry.Audit.Host != "" {
-			out[entry.Audit.Host+entry.Audit.Path] = entry.RejectedBy
+		if json.Unmarshal(sc.Bytes(), &e) == nil && e.Decision != "" {
+			path, _, _ := strings.Cut(e.Target, "?")
+			out[e.Host+path] = e.Reason
 		}
 	}
 	return out

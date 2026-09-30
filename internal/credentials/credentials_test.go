@@ -41,7 +41,7 @@ func TestParse(t *testing.T) {
 			t.Errorf("Parse(%q) = %v, %v", in, got, err)
 		}
 	}
-	for _, bad := range []string{"", "sk-ant-oat01-short", "ghp_abcdefghijklmnopqrstuvwxyz", token + " -w other", token + "\nIRON_X=1", "sk-ant-xyz01-abcdefghijklmnopqrstuv", strings.Replace(token, "_", "'", 1)} {
+	for _, bad := range []string{"", "sk-ant-oat01-short", "ghp_abcdefghijklmnopqrstuvwxyz", token + " -w other", token + "\nSEALROOM_EXTRA=1", "sk-ant-xyz01-abcdefghijklmnopqrstuv", strings.Replace(token, "_", "'", 1)} {
 		if _, err := Parse(bad); err == nil {
 			t.Errorf("Parse(%q) accepted it", bad)
 		}
