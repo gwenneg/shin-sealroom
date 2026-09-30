@@ -2,6 +2,8 @@
 
 This document describes how Sealroom works and why. Every decision below is judged by one question: does it make Sealroom easier to trust?
 
+It describes the whole design, including parts not built yet. The [status](#status) at the end says which. The [threat model](threat-model.md) says what the design defends against and where it stops.
+
 ## The one-sentence design
 
 > The plugin runs in a container that has no way out but a proxy, the proxy holds every credential, and nothing leaves the run before the user reviews it.
@@ -43,7 +45,7 @@ The launcher creates the internal network on a random private subnet, starts the
 | Read-only root filesystem, throwaway home and work directory in memory | The plugin cannot alter the tooling, and nothing persists after the run |
 | Nothing from the host mounted, except the plugin read-only, the repository read-only, the proxy's CA certificate, and one output directory | No home directory, no keys, no credentials, no container runtime socket |
 | No credential of any kind, only placeholders | A plugin that reads every file and every environment variable finds nothing usable |
-| Memory, CPU, process and time limits | A plugin cannot exhaust the machine |
+| Memory, CPU, process and time limits | A plugin can use only a bounded share of the machine |
 
 The proxy container is locked down the same way: read-only root, no capabilities, `no-new-privileges`, the same limits, and only its configuration, the CA certificate and key mounted, read-only. It answers DNS and HTTPS on low ports through the `ip_unprivileged_port_start` setting of its own network namespace, not a capability. Its credentials arrive in an environment file that only the proxy receives.
 
@@ -116,12 +118,25 @@ On Linux, what the agent writes to the output directory belongs to the agent's u
 
 ## Status
 
-A prototype proved the design end to end on a real plugin and repository, with a Claude subscription: the lock-down, the subscription token added by the proxy, the refusal of foreign credentials, the read-only GitHub access that let the plugin check a branch ruleset, the recorded push and pull request, and the review on the host with a signed commit.
+Built and tested in CI, with Docker and rootless Podman on Linux:
 
-Still to prove:
+- the agent and proxy images, and every restriction of both containers;
+- the proxy's rules for a run, probed against the real proxy and services;
+- `sealroom run` up to the end of the session, with a Claude subscription token or an Anthropic API key read from the environment, and the GitHub token from the GitHub CLI.
 
-- **Anthropic API key**: only the proxy's handling was checked, with a fake key.
-- **Google Vertex AI**: not tried yet. The proxy's support for Google credentials was read in its source, not run, and an organization's policy may refuse requests from outside its own network.
+A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.
+
+Not built yet:
+
+- the review and the push on the host after the session, and the removal of the output directory;
+- the credentials handling described above, beyond environment variables;
+- what a plugin declares;
+- published images: they are built locally for now;
+- SELinux, on Fedora and RHEL.
+
+Not tried yet:
+
+- **Google Vertex AI**: the proxy's support for Google credentials was read in its source, not run, and an organization's policy may refuse requests from outside its own network.
+- **An Anthropic API key in a real session**: only the proxy's handling was checked, with a fake key.
 - The push to a fork and the pull request creation.
 - Copy and paste from the session in common terminals.
-- SELinux, on Fedora and RHEL.
