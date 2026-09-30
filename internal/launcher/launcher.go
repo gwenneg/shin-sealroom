@@ -74,6 +74,12 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	res := Result{RunDir: runDir, OutDir: filepath.Join(runDir, "out"), ExitCode: -1}
 	fmt.Fprintf(term.Err, "sealroom: preparing the run in %s\n", runDir)
 
+	// The agent mounts Sealroom's copy, never the user's plugin directory.
+	pluginCopy := filepath.Join(runDir, "plugin")
+	if err := copyPlugin(plugin, pluginCopy); err != nil {
+		return res, fmt.Errorf("copying the plugin: %w", err)
+	}
+
 	src := filepath.Join(runDir, "src")
 	clone := exec.Command("git", "clone", "--quiet", "https://github.com/"+opts.Repo, src)
 	clone.Stdout, clone.Stderr = term.Err, term.Err
@@ -99,6 +105,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 		Name: "sealroom-" + id + "-proxy", Image: opts.ProxyImage, Network: network, IP: ip,
 		Config: filepath.Join(runDir, "proxy.yaml"), CACert: filepath.Join(runDir, "ca.crt"),
 		CAKey: filepath.Join(runDir, "ca.key"), EnvFile: filepath.Join(runDir, "proxy.env"), Outbound: outbound,
+		Relabel: relabel(rt),
 	}
 	args, err := p.RunArgs()
 	if err != nil {
@@ -118,7 +125,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 
 	a := sandbox.Agent{
 		Name: "sealroom-" + id + "-agent", Image: opts.AgentImage, Network: network, ProxyIP: ip,
-		Plugin: plugin, Repo: src, CACert: p.CACert, Out: res.OutDir,
+		Plugin: pluginCopy, Repo: src, CACert: p.CACert, Out: res.OutDir, Relabel: relabel(rt),
 		Env: agentEnv(creds.ClaudeAuth), Command: agentCommand(opts.Prompt), TTY: term.TTY,
 	}
 	args, err = a.RunArgs()
@@ -132,6 +139,13 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	defer signal.Reset(os.Interrupt)
 	res.ExitCode, err = rt.Interactive(term.In, term.Out, term.Err, args...)
 	return res, err
+}
+
+// relabel reports whether the mounts get SELinux labels: with Podman, which
+// ignores them where SELinux is off. Docker's --mount has no such option, and
+// Docker does not confine containers with SELinux unless its daemon is set to.
+func relabel(rt container.Runtime) bool {
+	return filepath.Base(rt.Bin) == "podman"
 }
 
 // agentEnv holds placeholders only, never a credential.

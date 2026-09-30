@@ -25,14 +25,14 @@ sealroom run <plugin> --repo <owner/repo>
 | Component | Runs where | Does |
 |---|---|---|
 | **Launcher** (`sealroom`) | The user's machine | Clones the repository, writes the proxy's rules for this run, hands the credentials to the proxy only, starts both containers, and after the session shows the changes and pushes on the user's yes |
-| **Agent container** | Container runtime | Claude Code, the plugin mounted read-only, a copy of the repository, and stand-ins for `git push` and `gh pr create` |
+| **Agent container** | Container runtime | Claude Code, a copy of the plugin mounted read-only, a copy of the repository, and stand-ins for `git push` and `gh pr create` |
 | **Proxy container** | Container runtime | The only route out of the agent: allows each request by host, method and path, holds the credentials and adds them to allowed requests, refuses everything else |
 
 The launcher drives Podman or Docker directly, Podman first when both are installed. It does not depend on Compose, whose command and behaviour differ between Docker's plugin, the standalone binary and Podman.
 
 ## The run directory
 
-Each run gets a directory under the user's cache directory (`~/.cache/sealroom/runs` on Linux, `~/Library/Caches/sealroom/runs` on macOS). It is under the home directory, so a runtime in a virtual machine that shares only the home directory, as on macOS, can mount it. Only the user can enter it. It holds the clone, the proxy's rules, the run's CA and the proxy's credentials file, and the output directory. The files the proxy reads are readable by all, since the proxy runs as its own user, but the directory around them is the user's alone. The credentials file is readable by the user only: the runtime's command line reads it on the proxy's behalf. The output directory is writable by the agent's user.
+Each run gets a directory under the user's cache directory (`~/.cache/sealroom/runs` on Linux, `~/Library/Caches/sealroom/runs` on macOS). It is under the home directory, so a runtime in a virtual machine that shares only the home directory, as on macOS, can mount it. Only the user can enter it. It holds the copy of the plugin, the clone, the proxy's rules, the run's CA and the proxy's credentials file, and the output directory. The files the proxy reads are readable by all, since the proxy runs as its own user, but the directory around them is the user's alone. The credentials file is readable by the user only: the runtime's command line reads it on the proxy's behalf. The output directory is writable by the agent's user.
 
 The launcher creates the internal network on a random private subnet, starts the proxy and waits until it listens, then attaches the agent to the user's terminal. Ctrl-C belongs to the session while it runs. When the session ends, however it ends, the launcher removes the proxy and both networks.
 
@@ -43,7 +43,7 @@ The launcher creates the internal network on a random private subnet, starts the
 | Internal network only: no gateway, and DNS answered by the proxy | Nothing reaches the internet except through the proxy. Raw sockets, hard-coded addresses and DNS tunnels have no route |
 | Non-root user, all capabilities dropped, `no-new-privileges` | No privilege to gain, and nothing that could change the network rules |
 | Read-only root filesystem, throwaway home and work directory in memory | The plugin cannot alter the tooling, and nothing persists after the run |
-| Nothing from the host mounted, except the plugin read-only, the repository read-only, the proxy's CA certificate, and one output directory | No home directory, no keys, no credentials, no container runtime socket |
+| Nothing from the host mounted, except copies of the plugin and the repository read-only, the proxy's CA certificate, and one output directory, all in the run directory | No home directory, no keys, no credentials, no container runtime socket |
 | No credential of any kind, only placeholders | A plugin that reads every file and every environment variable finds nothing usable |
 | Memory, CPU, process and time limits | A plugin can use only a bounded share of the machine |
 
@@ -52,6 +52,8 @@ The proxy container is locked down the same way: read-only root, no capabilities
 Both containers start with `--pull never`, so a run never reaches a registry. The restrictions are set in one place, `internal/sandbox`, and `TestArgsSeal` fails if one goes missing or a forbidden option appears, such as `--privileged`, an added capability, a host namespace, a published port, or an extra mount. A host path mounted into a container is refused if it is not absolute and clean, if it is the root, the home directory or one of its parents, or if it contains a character that would change the meaning of the mount option. The agent receives only a fixed list of environment variables, and every credential variable must hold the placeholder.
 
 The image holds Claude Code, git and the GitHub CLI, each downloaded at a pinned version and checked against a checksum in the image's definition, on a Debian base pinned by digest. Claude Code follows its stable channel, with its auto-updater and non-essential traffic turned off, and its first-run screens skipped. The stand-ins for `git` and `gh` come first on the `PATH`, ahead of the real commands.
+
+The plugin is copied into the run directory before the session, so the agent mounts Sealroom's copy, a snapshot of the plugin at start, and never the user's own directory. The copy keeps symbolic links as links without following them, so no file outside the plugin is copied through one; it skips git metadata, refuses anything but files, directories and links, and stops at 100,000 files or 1 GiB.
 
 The repository is copied into the container at start, so the plugin never writes to the user's clone. The output directory receives the changes as a patch, the branch name, and the recorded pull request, and nothing else is written on the host. When Claude Code exits, the session script commits whatever is left uncommitted and writes every commit since the repository's default branch as one patch.
 
@@ -114,7 +116,9 @@ A plugin can need more than the defaults, such as a host it calls or a permissio
 
 Sealroom runs with rootless Podman or Docker, on Linux and on macOS, and CI runs the end-to-end tests with both Docker and rootless Podman on Linux. The containers' restrictions use only options both runtimes share: the agent's in-memory home and work directories are writable through their mode, since Podman's `--tmpfs` has no owner option, and the session works in a directory the agent creates, which git accepts as the agent's own.
 
-On Linux, what the agent writes to the output directory belongs to the agent's user, or to one of the user's subordinate users with rootless Podman, so the user cannot remove it directly: it has to be removed through a container, which the launcher does not do yet. SELinux, enforcing on Fedora and RHEL, is not handled yet: its labels keep a container from reading files in the home directory until the mounts are relabeled.
+On Linux, what the agent writes to the output directory belongs to the agent's user, or to one of the user's subordinate users with rootless Podman, so the user cannot remove it directly: it has to be removed through a container, which the launcher does not do yet.
+
+SELinux, enforcing on Fedora and RHEL, keeps a container from reading files in the home directory unless they carry a container label. With Podman, every mount gets one through Podman's `relabel` option: `private` for files one container reads, which ties them to that container so no other container on the machine can read them, and `shared` for the run's CA certificate, which the proxy and the agent both read. Relabeling changes the labels on the host, which is why only files of the run directory are ever mounted. Podman ignores the option where SELinux is off. Docker's `--mount` has no such option, and Docker confines containers with SELinux only when its daemon is set to. A container's SELinux separation is never turned off: `TestArgsSeal` refuses `label=disable`.
 
 ## Status
 
@@ -131,8 +135,7 @@ Not built yet:
 - the review and the push on the host after the session, and the removal of the output directory;
 - the credentials handling described above, beyond environment variables;
 - what a plugin declares;
-- published images: they are built locally for now;
-- SELinux, on Fedora and RHEL.
+- published images: they are built locally for now.
 
 Not tried yet:
 
@@ -140,3 +143,4 @@ Not tried yet:
 - **An Anthropic API key in a real session**: only the proxy's handling was checked, with a fake key.
 - The push to a fork and the pull request creation.
 - Copy and paste from the session in common terminals.
+- **SELinux with Podman, on Fedora and RHEL**: built, but only run where SELinux is off. The [development guide](development.md#checking-on-fedora) has the check to run on Fedora.

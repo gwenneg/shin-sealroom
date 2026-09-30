@@ -46,7 +46,7 @@ func TestSession(t *testing.T) {
 		// What the agent wrote is owned by its user on Linux: removed from a container.
 		t.Cleanup(func() {
 			rt.Run("run", "--rm", "--pull", "never", "--network", "none", "--entrypoint", "rm",
-				"--mount", "type=bind,src="+res.OutDir+",dst=/out", testImage, "-rf", "/out/branch", "/out/changes.patch")
+				"--mount", "type=bind,src="+res.OutDir+",dst=/out"+strings.Replace(probeLabel(), "shared", "private", 1), testImage, "-rf", "/out/branch", "/out/changes.patch")
 			os.RemoveAll(res.RunDir)
 		})
 	}

@@ -27,6 +27,19 @@ go run ./cmd/sealroom run <plugin-dir> --repo <owner/repo> --prompt '/<plugin>:<
 
 The run directory is under the user's cache directory, printed at the start. `SEALROOM_RUNTIME` picks `podman` or `docker`; Podman comes first when both are installed. The review and the push after the session are not built yet: the session's changes stay in the run's `out` directory.
 
+## Checking on Fedora
+
+SELinux cannot be checked in CI, since GitHub's Linux runners do not enforce it. On Fedora or RHEL, with SELinux enforcing (`getenforce` prints `Enforcing`) and rootless Podman:
+
+```
+podman build -t sealroom-proxy:dev images/proxy
+podman build -t sealroom-agent:dev images/agent
+podman pull "$(sed -n 's/^curl_image=//p' images/proxy/smoke-test.sh)"
+CONTAINER_RUNTIME=podman SEALROOM_E2E=1 go test -count=1 -v ./internal/e2e/
+```
+
+Both end-to-end tests must pass. A denial shows as a permission error on a mounted file, and in `sudo ausearch -m avc -ts recent`.
+
 ## Go version
 
 `go.mod` pins the Go version, the latest stable release when it was last updated. A newer or older local Go downloads the pinned version automatically, since `GOTOOLCHAIN` defaults to `auto`, and CI installs it from `go.mod`.

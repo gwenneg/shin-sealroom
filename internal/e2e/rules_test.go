@@ -53,6 +53,14 @@ func workDir(t *testing.T) string {
 	return dir
 }
 
+// probeLabel lets the probes read the CA certificate under SELinux.
+func probeLabel() string {
+	if runtime() == "podman" {
+		return ",relabel=shared"
+	}
+	return ""
+}
+
 func suffix() string {
 	b := make([]byte, 4)
 	rand.Read(b)
@@ -109,6 +117,7 @@ func TestProxyRules(t *testing.T) {
 		Name: "sealroom-e2e-proxy-" + s, Image: image, Network: internal, IP: "172.29.0.2",
 		Config: filepath.Join(dir, "proxy.yaml"), CACert: filepath.Join(dir, "ca.crt"),
 		CAKey: filepath.Join(dir, "ca.key"), EnvFile: filepath.Join(dir, "proxy.env"), Outbound: outbound,
+		Relabel: runtime() == "podman",
 	}
 	args, err := p.RunArgs()
 	if err != nil {
@@ -127,7 +136,7 @@ func TestProxyRules(t *testing.T) {
 	probe := func(t *testing.T, curlArgs ...string) (string, bool) {
 		t.Helper()
 		args := append([]string{"run", "--rm", "--pull", "never", "--network", internal.Name, "--dns", p.IP,
-			"--mount", "type=bind,src=" + p.CACert + ",dst=/ca.crt,readonly", CurlImage,
+			"--mount", "type=bind,src=" + p.CACert + ",dst=/ca.crt,readonly" + probeLabel(), CurlImage,
 			"-s", "-o", "/dev/null", "--cacert", "/ca.crt", "--max-time", "30",
 			"-w", "%{http_code} %header{x-github-request-id}%header{request-id}%header{cf-ray}"}, curlArgs...)
 		out := strings.Fields(must(t, args...))
