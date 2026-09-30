@@ -28,7 +28,7 @@ go run ./cmd/sealroom login   # once: a token from claude setup-token, or an API
 go run ./cmd/sealroom run <plugin-dir> --repo <owner/repo> --prompt '/<plugin>:<command>'
 ```
 
-The run directory is under the user's cache directory, printed at the start. `SEALROOM_RUNTIME` picks `podman` or `docker`; Podman comes first when both are installed. After the session, the launcher applies its changes to a branch of the run's clone, shows them, and asks before pushing and opening the pull request. On no, the branch stays in the run's `src` directory.
+The run directory is under the user's cache directory, printed at the start. `SEALROOM_RUNTIME` picks `podman` or `docker`; Podman comes first when both are installed. After the session, the launcher applies its changes to a branch of the run's clone, shows them, and asks before pushing and opening the pull request. On no, the branch stays in the run's `src` directory until `go run ./cmd/sealroom clean` removes it, 7 days later, or right away with `--all`.
 
 ## Published images
 

@@ -30,7 +30,7 @@ Everything that comes from the plugin, and everything the agent container writes
 |---|---|
 | Read the user's files or keys | Nothing from the host is mounted except the plugin and the repository, both read-only, and one output directory |
 | Steal a credential | No credential exists in the agent container, only placeholders. The proxy adds the real ones |
-| Find a credential on disk after the run | The file that hands the credentials to the proxy is deleted as soon as the proxy is created. The Claude credential is kept in the operating system's keychain, and handed to the keychain tools on their standard input, never in their arguments |
+| Find a credential on disk after the run | The file that hands the credentials to the proxy is deleted as soon as the proxy is created, and the CA's key and the copy of the Google credentials once the proxy is removed. The Claude credential is kept in the operating system's keychain, and handed to the keychain tools on their standard input, never in their arguments |
 | Send data to a host of the attacker's | The agent container has no route out. The proxy refuses every host that is not allowed |
 | Send data through an allowed host with the attacker's own credential | The proxy drops every header that is not on its list, requires the placeholder on the model API, and adds the user's GitHub token only on the repository of the run |
 | Send data to a Google Cloud project of the attacker's, with Vertex | Only Anthropic's models in the user's project and region are allowed, and the agent's own Google headers are dropped |

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -39,6 +40,7 @@ Usage:
   sealroom logout              remove it
   sealroom run <plugin> --repo <owner/repo> [--prompt <text>]
                                run a plugin on a repository, sealed
+  sealroom clean [--all]       remove runs older than 7 days, or all of them
   sealroom version             print the version
 
 Your Claude credential is a subscription token (claude setup-token) or an
@@ -80,7 +82,15 @@ var session = func(opts launcher.Options) error {
 	if err != nil {
 		return err
 	}
-	return launcher.Review(rt, res, opts.AgentImage, publish.CLI{}, term)
+	outcome, err := launcher.Review(rt, res, opts.AgentImage, publish.CLI{}, term)
+	// Nothing is left to keep after a pull request, or a session that changed
+	// nothing: the run's directory goes. After a no, the branch stays in it.
+	if err == nil && outcome != launcher.Kept {
+		if rmErr := launcher.RemoveRun(rt, res.RunDir, opts.AgentImage); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "sealroom: could not remove %s: %v\n", res.RunDir, rmErr)
+		}
+	}
+	return err
 }
 
 // Run executes the command line args, writing to stdout and stderr, and
@@ -103,6 +113,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return login(stdout, stderr)
 	case "logout":
 		return logout(stdout, stderr)
+	case "clean":
+		return clean(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return Usage
@@ -174,6 +186,33 @@ func vertex() (*launcher.Vertex, error) {
 	}
 	return v, nil
 }
+
+func clean(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("clean", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	all := fs.Bool("all", false, "remove every run, however recent")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprint(stderr, "sealroom clean takes only --all\n\n"+usage)
+		return Usage
+	}
+	olderThan := 7 * 24 * time.Hour
+	if *all {
+		olderThan = 0
+	}
+	rt, err := container.Detect()
+	if err != nil {
+		fmt.Fprintf(stderr, "sealroom: %v\n", err)
+		return Failure
+	}
+	if err := cleanRuns(rt, envOr("SEALROOM_AGENT_IMAGE", "sealroom-agent:dev"), olderThan, time.Now().UTC(), stdout); err != nil {
+		fmt.Fprintf(stderr, "sealroom: %v\n", err)
+		return Failure
+	}
+	return OK
+}
+
+// cleanRuns removes old runs; tests replace it.
+var cleanRuns = launcher.Clean
 
 func login(stdout, stderr io.Writer) int {
 	kc := creds.System()

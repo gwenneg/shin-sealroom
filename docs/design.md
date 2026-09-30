@@ -34,6 +34,8 @@ The launcher drives Podman or Docker directly, Podman first when both are instal
 
 Each run gets a directory under the user's cache directory (`~/.cache/sealroom/runs` on Linux, `~/Library/Caches/sealroom/runs` on macOS). It is under the home directory, so a runtime in a virtual machine that shares only the home directory, as on macOS, can mount it. Only the user can enter it. It holds the copy of the plugin, the clone, the proxy's rules, the run's CA and the proxy's credentials file, and the output directory. The files the proxy reads are readable by all, since the proxy runs as its own user, but the directory around them is the user's alone. The credentials file is readable by the user only: the runtime's command line reads it on the proxy's behalf. The output directory is writable by the agent's user.
 
+The run's secrets leave the disk as soon as nothing needs them: the credentials file once the proxy is created, the CA's key and the copy of the Google credentials once the proxy is removed. After a pull request is opened, or a session that changed nothing, the launcher removes the whole run directory. After a no, it keeps the directory, whose clone holds the user's branch, until `sealroom clean` removes it: every run started more than 7 days ago, or every run with `--all`. `sealroom clean` removes only directories named as the launcher names them, never follows a link, and skips any run whose containers still exist. What the agent wrote belongs to its user on Linux, so when the user cannot remove it, the output directory is emptied through the cleanup container first.
+
 The launcher creates the internal network on a random private subnet, starts the proxy and waits until it listens, then attaches the agent to the user's terminal. Ctrl-C belongs to the session while it runs. When the session ends, however it ends, the launcher removes the proxy and both networks.
 
 ## The agent container
@@ -143,6 +145,7 @@ Built and tested in CI, with Docker and rootless Podman on Linux:
 - the proxy's rules for a run, probed against the real proxy and services;
 - `sealroom run` from the session to the pull request, with a Claude subscription token or an Anthropic API key from the keychain or the environment, and the GitHub token from the GitHub CLI. The push and the pull request were also run for real on a test repository, with a signed commit.
 - `sealroom login` and `logout`, with the macOS Keychain, checked by hand.
+- `sealroom clean`, and the removal of each run's directory and secrets once they are no longer needed.
 - both images, built for amd64 and arm64. Publishing them to GitHub's container registry, with a build provenance attestation, is ready but off until the maintainer turns it on.
 
 A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.

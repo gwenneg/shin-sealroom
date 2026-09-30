@@ -86,8 +86,12 @@ func TestSession(t *testing.T) {
 	// The review, answering no to the full diff.
 	var shown bytes.Buffer
 	// No to the diff, then no to the push: nothing may reach GitHub.
-	if err := launcher.Review(rt, res, testImage, noGitHub{t}, launcher.Terminal{In: strings.NewReader("n\nn\n"), Out: &shown, Err: &shown}); err != nil {
+	outcome, err := launcher.Review(rt, res, testImage, noGitHub{t}, launcher.Terminal{In: strings.NewReader("n\nn\n"), Out: &shown, Err: &shown})
+	if err != nil {
 		t.Fatalf("review: %v\n%s", err, &shown)
+	}
+	if outcome != launcher.Kept {
+		t.Errorf("outcome %v, want the branch kept after a no", outcome)
 	}
 	for _, want := range []string{"Record what the sealed session saw", "Title: Sealed session results", "Base:  master", "nothing was pushed"} {
 		if !strings.Contains(shown.String(), want) {
@@ -102,12 +106,25 @@ func TestSession(t *testing.T) {
 		t.Errorf("the output directory was not emptied: %v, %v", entries, err)
 	}
 
+	// The CA's key left the disk with the proxy.
+	if _, err := os.Stat(filepath.Join(res.RunDir, "ca.key")); !os.IsNotExist(err) {
+		t.Errorf("the CA's key is still on disk: %v", err)
+	}
+
 	id := filepath.Base(res.RunDir)
 	if out := must(t, "ps", "--all", "--quiet", "--filter", "name=sealroom-"+id); strings.TrimSpace(out) != "" {
 		t.Errorf("containers left behind: %s", out)
 	}
 	if out := must(t, "network", "ls", "--quiet", "--filter", "name=sealroom-"+id); strings.TrimSpace(out) != "" {
 		t.Errorf("networks left behind: %s", out)
+	}
+
+	// RemoveRun removes the whole run, agent-owned files included.
+	if err := launcher.RemoveRun(rt, res.RunDir, testImage); err != nil {
+		t.Errorf("removing the run: %v", err)
+	}
+	if _, err := os.Stat(res.RunDir); !os.IsNotExist(err) {
+		t.Errorf("the run's directory is still there: %v", err)
 	}
 }
 

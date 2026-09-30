@@ -128,6 +128,9 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	if err != nil {
 		return res, err
 	}
+	// The CA's key is needed only while the proxy runs: it leaves the disk
+	// once the proxy is removed, which the deferred calls below do first.
+	defer os.Remove(p.CAKey)
 	_, err = rt.Run(args...)
 	// The runtime read the credentials when it created the container: they
 	// leave the disk now, whatever the outcome.
@@ -239,16 +242,25 @@ func newID() string {
 	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b)
 }
 
-// makeRunDir creates the run's directory under the user's cache directory,
-// which Colima shares with its virtual machine. Only the user can enter it;
-// the output directory inside is writable by the agent's user.
-func makeRunDir(id string) (string, error) {
+// RunsDir is where the runs' directories are: under the user's cache
+// directory, which Colima shares with its virtual machine on macOS.
+func RunsDir() (string, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(cache, "sealroom", "runs", id)
-	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+	return filepath.Join(cache, "sealroom", "runs"), nil
+}
+
+// makeRunDir creates the run's directory. Only the user can enter it; the
+// output directory inside is writable by the agent's user.
+func makeRunDir(id string) (string, error) {
+	runs, err := RunsDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(runs, id)
+	if err := os.MkdirAll(runs, 0o700); err != nil {
 		return "", err
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -365,24 +377,36 @@ func waitListening(rt container.Runtime, name string) error {
 	return errors.New("the proxy did not start listening in time")
 }
 
+// Outcome is how a review ended.
+type Outcome int
+
+const (
+	// Unchanged: the session changed nothing.
+	Unchanged Outcome = iota
+	// Kept: nothing was pushed, and the branch stays in the run's clone.
+	Kept
+	// Published: the branch is pushed and its pull request open.
+	Published
+)
+
 // Review applies what the session changed to a branch of the host's clone,
 // shows it to the user, and on their yes pushes it and opens the pull
 // request with their own GitHub login. The output directory is emptied
 // whatever the outcome.
-func Review(rt container.Runtime, res Result, agentImage string, gh publish.GitHub, term Terminal) error {
+func Review(rt container.Runtime, res Result, agentImage string, gh publish.GitHub, term Terminal) (Outcome, error) {
 	defer emptyOutput(rt, res, agentImage, term)
 	out, err := review.Read(res.OutDir)
 	if err != nil {
-		return fmt.Errorf("reading the session's output: %w", err)
+		return Kept, fmt.Errorf("reading the session's output: %w", err)
 	}
 	if len(out.Patch) == 0 {
 		fmt.Fprintln(term.Err, "sealroom: the session changed nothing.")
-		return nil
+		return Unchanged, nil
 	}
 	src := filepath.Join(res.RunDir, "src")
 	branch, err := review.Apply(src, out, "sealroom/"+filepath.Base(res.RunDir))
 	if err != nil {
-		return err
+		return Kept, err
 	}
 	// Without a pull request from the session, the last commit's message
 	// makes one, shown before the question like any other.
@@ -391,17 +415,17 @@ func Review(rt container.Runtime, res Result, agentImage string, gh publish.GitH
 		pr = &review.PullRequest{Title: gitOutput(src, "log", "-1", "--format=%s"), Body: gitOutput(src, "log", "-1", "--format=%b")}
 	}
 	if err := review.Show(term.Out, src, branch, pr); err != nil {
-		return err
+		return Kept, err
 	}
 	answers := bufio.NewReader(term.In)
 	if ask(answers, term.Out, "Show the full diff? [y/N] ") {
 		if err := review.Diff(term.Out, src); err != nil {
-			return err
+			return Kept, err
 		}
 	}
-	notPushed := func() error {
-		fmt.Fprintf(term.Err, "sealroom: nothing was pushed. The branch %s is in %s.\n", review.Sanitize(branch), src)
-		return nil
+	notPushed := func() (Outcome, error) {
+		fmt.Fprintf(term.Err, "sealroom: nothing was pushed. The branch %s is in %s, until sealroom clean removes it.\n", review.Sanitize(branch), src)
+		return Kept, nil
 	}
 	if !ask(answers, term.Out, fmt.Sprintf("Push %s and open this pull request on %s? [y/N] ", review.Sanitize(branch), res.Repo)) {
 		return notPushed()
@@ -410,14 +434,14 @@ func Review(rt container.Runtime, res Result, agentImage string, gh publish.GitH
 	req := publish.Request{Repo: res.Repo, Clone: src, Branch: branch, Title: pr.Title, Body: pr.Body, Base: pr.Base, Draft: pr.Draft, Dir: res.RunDir}
 	target, err := publish.Choose(gh, req)
 	if err != nil {
-		return err
+		return Kept, err
 	}
 	if target.Fork && !publish.ForkExists(gh, req, target) {
 		if !ask(answers, term.Out, fmt.Sprintf("You cannot push to %s. Create your fork %s? [y/N] ", res.Repo, target.PushTo)) {
 			return notPushed()
 		}
 		if err := publish.CreateFork(gh, req); err != nil {
-			return fmt.Errorf("creating your fork: %w", err)
+			return Kept, fmt.Errorf("creating your fork: %w", err)
 		}
 		// GitHub creates a fork in the background.
 		for i := 0; i < 30 && !publish.ForkExists(gh, req, target); i++ {
@@ -425,18 +449,18 @@ func Review(rt container.Runtime, res Result, agentImage string, gh publish.GitH
 		}
 	}
 	if err := publish.Push(req, target); err != nil {
-		return fmt.Errorf("pushing %s to %s: %w", branch, target.PushTo, err)
+		return Kept, fmt.Errorf("pushing %s to %s: %w", branch, target.PushTo, err)
 	}
 	base, err := publish.Base(gh, req, func(b string) bool { return review.ValidBranch(src, b) })
 	if err != nil {
-		return err
+		return Kept, err
 	}
 	url, err := publish.OpenPullRequest(gh, req, target, base)
 	if err != nil {
-		return fmt.Errorf("opening the pull request (the branch is pushed to %s): %w", target.PushTo, err)
+		return Kept, fmt.Errorf("opening the pull request (the branch is pushed to %s): %w", target.PushTo, err)
 	}
 	fmt.Fprintf(term.Out, "sealroom: pull request opened: %s\n", strings.TrimSpace(url))
-	return nil
+	return Published, nil
 }
 
 func gitOutput(repo string, args ...string) string {
@@ -465,4 +489,18 @@ func emptyOutput(rt container.Runtime, res Result, agentImage string, term Termi
 	if err != nil {
 		fmt.Fprintf(term.Err, "sealroom: could not empty %s: %v\n", res.OutDir, err)
 	}
+}
+
+// RemoveRun removes a run's directory. What the agent wrote belongs to its
+// user on Linux, so when the user cannot remove it, the output directory is
+// emptied through the cleanup container first.
+func RemoveRun(rt container.Runtime, dir, agentImage string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	c := sandbox.Cleanup{Name: "sealroom-" + filepath.Base(dir) + "-cleanup", Image: agentImage, Out: filepath.Join(dir, "out"), Relabel: relabel(rt)}
+	if args, err := c.RunArgs(); err == nil {
+		rt.Run(args...)
+	}
+	return os.RemoveAll(dir)
 }
