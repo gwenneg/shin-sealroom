@@ -62,11 +62,12 @@ var session = func(opts launcher.Options) error {
 	if err != nil {
 		return err
 	}
-	res, err := launcher.Run(rt, opts, creds, launcher.Terminal{In: os.Stdin, Out: os.Stdout, Err: os.Stderr, TTY: true})
-	if res.RunDir != "" {
-		fmt.Fprintf(os.Stderr, "sealroom: the session ended. Its output is in %s\n", res.OutDir)
+	term := launcher.Terminal{In: os.Stdin, Out: os.Stdout, Err: os.Stderr, TTY: true}
+	res, err := launcher.Run(rt, opts, creds, term)
+	if err != nil {
+		return err
 	}
-	return err
+	return launcher.Review(rt, res, opts.AgentImage, term)
 }
 
 // Run executes the command line args, writing to stdout and stderr, and

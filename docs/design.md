@@ -99,14 +99,18 @@ The credentials live on the host and in the proxy container, never in the agent 
 
 The plugin never pushes. In the agent container, `git push` and `gh pr create` are stand-ins: they record the branch and the pull request's title, body, base branch and draft flag in the output directory, and ignore any repository, head, reviewer or label the agent passes, and tell the agent that both happen after the user's review. `gh pr view`, `list` and `status` answer that the pull request does not exist yet.
 
-When the session ends, the launcher treats the output directory as untrusted input:
+When the session ends, the launcher treats the output directory as untrusted input, read by `internal/review` only:
 
-- the patch is refused if it touches anything under a `.git` directory;
-- the branch name must pass `git check-ref-format`, or a generated name is used;
+- every file must be a regular file inside the output directory, opened through Go's `os.Root` and checked again once open: a symbolic link the agent planted, to a key of the host's for example, is refused rather than followed, so it is never shown or posted;
+- sizes are limited: 16 MiB for the patch, 64 KiB for the pull request's body, 256 bytes for a branch name, a title or a base branch;
+- every path the patch touches is listed with `git apply --numstat` before anything is applied, and the patch is refused if one is under a `.git` directory, in any letter case, since a file written into `.git/hooks` would run on the host at the next git command;
+- the branch name must pass `git check-ref-format` and must not start with a dash, or a generated name is used, as it is when the branch already exists;
 - the target repository is always the one the user asked for, never one written by the container;
 - the patch is applied with `git am` to the host clone, which the container only ever had read-only, so no git configuration or hook from the run is ever used on the host, and the commits are signed by the user's own git configuration.
 
-The launcher then shows the commits, the changed files, the pull request's title and body, and on request the full diff. On the user's yes, it pushes the branch, to the user's fork when they cannot push to the repository, and opens the pull request with `gh`.
+Everything shown to the user is sanitised: control characters, escape sequences, and invisible or direction-changing characters are shown as escapes, so nothing from the session can hide a line or rewrite what the user reads. What is pushed is never altered: the user reviews it, escapes visible, and the same bytes are sent. The diff is shown with git's external diff tools and text conversion off.
+
+The launcher then shows the commits, the changed files, the pull request's title, base and body, and on request the full diff, in a pager. It empties the output directory through a container running as the agent's user with no network, since on Linux what the agent wrote belongs to that user. The branch stays in the run's clone. On the user's yes, the launcher pushes the branch, to the user's fork when they cannot push to the repository, and opens the pull request with `gh`.
 
 ## What a plugin declares
 
@@ -116,7 +120,7 @@ A plugin can need more than the defaults, such as a host it calls or a permissio
 
 Sealroom runs with rootless Podman or Docker, on Linux and on macOS, and CI runs the end-to-end tests with both Docker and rootless Podman on Linux. The containers' restrictions use only options both runtimes share: the agent's in-memory home and work directories are writable through their mode, since Podman's `--tmpfs` has no owner option, and the session works in a directory the agent creates, which git accepts as the agent's own.
 
-On Linux, what the agent writes to the output directory belongs to the agent's user, or to one of the user's subordinate users with rootless Podman, so the user cannot remove it directly: it has to be removed through a container, which the launcher does not do yet.
+On Linux, what the agent writes to the output directory belongs to the agent's user, or to one of the user's subordinate users with rootless Podman, so the user cannot remove it directly: the launcher empties it through a container after the review.
 
 SELinux, enforcing on Fedora and RHEL, keeps a container from reading files in the home directory unless they carry a container label. With Podman, every mount gets one through Podman's `relabel` option: `private` for files one container reads, which ties them to that container so no other container on the machine can read them, and `shared` for the run's CA certificate, which the proxy and the agent both read. Relabeling changes the labels on the host, which is why only files of the run directory are ever mounted. Podman ignores the option where SELinux is off. Docker's `--mount` has no such option, and Docker confines containers with SELinux only when its daemon is set to. A container's SELinux separation is never turned off: `TestArgsSeal` refuses `label=disable`.
 
@@ -126,13 +130,13 @@ Built and tested in CI, with Docker and rootless Podman on Linux:
 
 - the agent and proxy images, and every restriction of both containers;
 - the proxy's rules for a run, probed against the real proxy and services;
-- `sealroom run` up to the end of the session, with a Claude subscription token or an Anthropic API key read from the environment, and the GitHub token from the GitHub CLI.
+- `sealroom run` up to the review on the host, with a Claude subscription token or an Anthropic API key read from the environment, and the GitHub token from the GitHub CLI.
 
 A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.
 
 Not built yet:
 
-- the review and the push on the host after the session, and the removal of the output directory;
+- the push and the pull request after the review;
 - the credentials handling described above, beyond environment variables;
 - what a plugin declares;
 - published images: they are built locally for now.
