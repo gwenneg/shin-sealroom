@@ -19,6 +19,7 @@ import (
 
 	"github.com/gwenneg/sealroom/internal/container"
 	"github.com/gwenneg/sealroom/internal/proxy"
+	"github.com/gwenneg/sealroom/internal/publish"
 	"github.com/gwenneg/sealroom/internal/review"
 	"github.com/gwenneg/sealroom/internal/sandbox"
 )
@@ -48,6 +49,7 @@ type Terminal struct {
 
 // Result says where a session left its output.
 type Result struct {
+	Repo     string // owner/repo, as the user asked
 	RunDir   string
 	OutDir   string
 	ExitCode int
@@ -73,7 +75,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{RunDir: runDir, OutDir: filepath.Join(runDir, "out"), ExitCode: -1}
+	res := Result{Repo: opts.Repo, RunDir: runDir, OutDir: filepath.Join(runDir, "out"), ExitCode: -1}
 	fmt.Fprintf(term.Err, "sealroom: preparing the run in %s\n", runDir)
 
 	// The agent mounts Sealroom's copy, never the user's plugin directory.
@@ -295,8 +297,10 @@ func waitListening(rt container.Runtime, name string) error {
 }
 
 // Review applies what the session changed to a branch of the host's clone,
-// shows it to the user, and empties the output directory. Nothing is pushed.
-func Review(rt container.Runtime, res Result, agentImage string, term Terminal) error {
+// shows it to the user, and on their yes pushes it and opens the pull
+// request with their own GitHub login. The output directory is emptied
+// whatever the outcome.
+func Review(rt container.Runtime, res Result, agentImage string, gh publish.GitHub, term Terminal) error {
 	defer emptyOutput(rt, res, agentImage, term)
 	out, err := review.Read(res.OutDir)
 	if err != nil {
@@ -311,7 +315,13 @@ func Review(rt container.Runtime, res Result, agentImage string, term Terminal) 
 	if err != nil {
 		return err
 	}
-	if err := review.Show(term.Out, src, branch, out.PR); err != nil {
+	// Without a pull request from the session, the last commit's message
+	// makes one, shown before the question like any other.
+	pr := out.PR
+	if pr == nil {
+		pr = &review.PullRequest{Title: gitOutput(src, "log", "-1", "--format=%s"), Body: gitOutput(src, "log", "-1", "--format=%b")}
+	}
+	if err := review.Show(term.Out, src, branch, pr); err != nil {
 		return err
 	}
 	answers := bufio.NewReader(term.In)
@@ -320,8 +330,52 @@ func Review(rt container.Runtime, res Result, agentImage string, term Terminal) 
 			return err
 		}
 	}
-	fmt.Fprintf(term.Err, "sealroom: nothing was pushed. The branch %s is in %s.\n", review.Sanitize(branch), src)
+	notPushed := func() error {
+		fmt.Fprintf(term.Err, "sealroom: nothing was pushed. The branch %s is in %s.\n", review.Sanitize(branch), src)
+		return nil
+	}
+	if !ask(answers, term.Out, fmt.Sprintf("Push %s and open this pull request on %s? [y/N] ", review.Sanitize(branch), res.Repo)) {
+		return notPushed()
+	}
+
+	req := publish.Request{Repo: res.Repo, Clone: src, Branch: branch, Title: pr.Title, Body: pr.Body, Base: pr.Base, Draft: pr.Draft, Dir: res.RunDir}
+	target, err := publish.Choose(gh, req)
+	if err != nil {
+		return err
+	}
+	if target.Fork && !publish.ForkExists(gh, req, target) {
+		if !ask(answers, term.Out, fmt.Sprintf("You cannot push to %s. Create your fork %s? [y/N] ", res.Repo, target.PushTo)) {
+			return notPushed()
+		}
+		if err := publish.CreateFork(gh, req); err != nil {
+			return fmt.Errorf("creating your fork: %w", err)
+		}
+		// GitHub creates a fork in the background.
+		for i := 0; i < 30 && !publish.ForkExists(gh, req, target); i++ {
+			time.Sleep(2 * time.Second)
+		}
+	}
+	if err := publish.Push(req, target); err != nil {
+		return fmt.Errorf("pushing %s to %s: %w", branch, target.PushTo, err)
+	}
+	base, err := publish.Base(gh, req, func(b string) bool { return review.ValidBranch(src, b) })
+	if err != nil {
+		return err
+	}
+	url, err := publish.OpenPullRequest(gh, req, target, base)
+	if err != nil {
+		return fmt.Errorf("opening the pull request (the branch is pushed to %s): %w", target.PushTo, err)
+	}
+	fmt.Fprintf(term.Out, "sealroom: pull request opened: %s\n", strings.TrimSpace(url))
 	return nil
+}
+
+func gitOutput(repo string, args ...string) string {
+	out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func ask(in *bufio.Reader, out io.Writer, question string) bool {

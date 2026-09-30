@@ -21,7 +21,11 @@ func Show(w io.Writer, repo, branch string, pr *PullRequest) error {
 		if pr.Draft {
 			draft = " (draft)"
 		}
-		fmt.Fprintf(w, "=== The pull request it prepared%s ===\nTitle: %s\nBase:  %s\n\n%s\n\n", draft, Sanitize(pr.Title), Sanitize(pr.Base), Sanitize(pr.Body))
+		base := Sanitize(pr.Base)
+		if base == "" {
+			base = "the default branch"
+		}
+		fmt.Fprintf(w, "=== The pull request%s ===\nTitle: %s\nBase:  %s\n\n%s\n\n", draft, Sanitize(pr.Title), base, Sanitize(pr.Body))
 	}
 	return nil
 }
