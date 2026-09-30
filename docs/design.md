@@ -110,7 +110,12 @@ When the session ends, the launcher treats the output directory as untrusted inp
 
 Everything shown to the user is sanitised: control characters, escape sequences, and invisible or direction-changing characters are shown as escapes, so nothing from the session can hide a line or rewrite what the user reads. What is pushed is never altered: the user reviews it, escapes visible, and the same bytes are sent. The diff is shown with git's external diff tools and text conversion off.
 
-The launcher then shows the commits, the changed files, the pull request's title, base and body, and on request the full diff, in a pager. It empties the output directory through a container running as the agent's user with no network, since on Linux what the agent wrote belongs to that user. The branch stays in the run's clone. On the user's yes, the launcher pushes the branch, to the user's fork when they cannot push to the repository, and opens the pull request with `gh`.
+The launcher then shows the commits, the changed files, the pull request's title, base and body, and on request the full diff, in a pager. It empties the output directory through a container running as the agent's user with no network, since on Linux what the agent wrote belongs to that user. Then it asks whether to push the branch and open the pull request. On no, nothing leaves, and the branch stays in the run's clone. On yes:
+
+- the branch goes to the repository when the user can push to it, otherwise to the user's fork of the same name, which the launcher offers to create when it does not exist;
+- the push never forces, and its only credential helper is the GitHub CLI's login, the user's own;
+- the pull request is opened with `gh`, with the title, body, base and draft flag the session recorded, the same bytes the user reviewed. Without a recorded pull request, the last commit's message makes one, shown before the question like any other. A base that is not a branch of the repository gives way to its default branch;
+- every value from the session reaches `gh` as a single `--flag=value` argument, so a title such as `--web` stays a title, and the base is escaped in the API path that checks it.
 
 ## What a plugin declares
 
@@ -130,13 +135,12 @@ Built and tested in CI, with Docker and rootless Podman on Linux:
 
 - the agent and proxy images, and every restriction of both containers;
 - the proxy's rules for a run, probed against the real proxy and services;
-- `sealroom run` up to the review on the host, with a Claude subscription token or an Anthropic API key read from the environment, and the GitHub token from the GitHub CLI.
+- `sealroom run` from the session to the pull request, with a Claude subscription token or an Anthropic API key read from the environment, and the GitHub token from the GitHub CLI. The push and the pull request were also run for real on a test repository, with a signed commit.
 
 A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.
 
 Not built yet:
 
-- the push and the pull request after the review;
 - the credentials handling described above, beyond environment variables;
 - what a plugin declares;
 - published images: they are built locally for now.
@@ -145,6 +149,6 @@ Not tried yet:
 
 - **Google Vertex AI**: the proxy's support for Google credentials was read in its source, not run, and an organization's policy may refuse requests from outside its own network.
 - **An Anthropic API key in a real session**: only the proxy's handling was checked, with a fake key.
-- The push to a fork and the pull request creation.
+- The push to a fork, and creating the fork.
 - Copy and paste from the session in common terminals.
 - **SELinux with Podman, on Fedora and RHEL**: built, but only run where SELinux is off. The [development guide](development.md#checking-on-fedora) has the check to run on Fedora.

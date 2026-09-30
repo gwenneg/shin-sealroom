@@ -16,6 +16,7 @@ import (
 	"github.com/gwenneg/sealroom/internal/container"
 	"github.com/gwenneg/sealroom/internal/launcher"
 	"github.com/gwenneg/sealroom/internal/proxy"
+	"github.com/gwenneg/sealroom/internal/publish"
 )
 
 // Version is set at build time with -ldflags "-X ...cli.Version=v1.2.3".
@@ -67,7 +68,7 @@ var session = func(opts launcher.Options) error {
 	if err != nil {
 		return err
 	}
-	return launcher.Review(rt, res, opts.AgentImage, term)
+	return launcher.Review(rt, res, opts.AgentImage, publish.CLI{}, term)
 }
 
 // Run executes the command line args, writing to stdout and stderr, and

@@ -80,7 +80,8 @@ func TestSession(t *testing.T) {
 
 	// The review, answering no to the full diff.
 	var shown bytes.Buffer
-	if err := launcher.Review(rt, res, testImage, launcher.Terminal{In: strings.NewReader("n\n"), Out: &shown, Err: &shown}); err != nil {
+	// No to the diff, then no to the push: nothing may reach GitHub.
+	if err := launcher.Review(rt, res, testImage, noGitHub{t}, launcher.Terminal{In: strings.NewReader("n\nn\n"), Out: &shown, Err: &shown}); err != nil {
 		t.Fatalf("review: %v\n%s", err, &shown)
 	}
 	for _, want := range []string{"Record what the sealed session saw", "Title: Sealed session results", "Base:  master", "nothing was pushed"} {
@@ -103,4 +104,17 @@ func TestSession(t *testing.T) {
 	if out := must(t, "network", "ls", "--quiet", "--filter", "name=sealroom-"+id); strings.TrimSpace(out) != "" {
 		t.Errorf("networks left behind: %s", out)
 	}
+}
+
+// noGitHub fails the test if the review calls GitHub.
+type noGitHub struct{ t *testing.T }
+
+func (g noGitHub) Output(args ...string) (string, error) {
+	g.t.Errorf("GitHub called after a no: gh %v", args)
+	return "", nil
+}
+
+func (g noGitHub) Run(args ...string) error {
+	g.t.Errorf("GitHub called after a no: gh %v", args)
+	return nil
 }
