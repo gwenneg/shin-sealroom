@@ -22,7 +22,7 @@ Sealroom runs untrusted plugins with the user's credentials within reach of a pr
 
 ## Supported platforms
 
-Sealroom must work on macOS, where Docker and Podman run in a virtual machine that often shares only the home directory (Colima's default), so anything mounted into a container must live under it, and on Linux, Fedora with Podman first.
+Sealroom must work on Linux, Fedora and RHEL with rootless Podman first, SELinux enforcing, and Docker too, and on macOS, where Docker and Podman run in a virtual machine that often shares only the home directory (Colima's default), so anything mounted into a container must live under it. Use only runtime options that Podman and Docker share, and keep CI running the end-to-end tests with both. What cannot be tested in CI, such as SELinux, is named as untested until checked on Fedora.
 
 ## Commits and pull requests
 

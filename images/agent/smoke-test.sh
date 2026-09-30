@@ -24,7 +24,7 @@ mkdir -p "$dir/out" "$dir/session-out" "$dir/fake" && chmod 777 "$dir/out" "$dir
 printf '#!/bin/sh\necho changed > file.txt\n' > "$dir/fake/claude" && chmod 755 "$dir/fake/claude"
 
 sealed=(run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges
-  --tmpfs /tmp --tmpfs "/home/agent:uid=10001,gid=10001" --tmpfs "/work:uid=10001,gid=10001"
+  --tmpfs /tmp --tmpfs "/home/agent:mode=1777" --tmpfs "/work:mode=1777"
   --mount "type=bind,src=$dir/src,dst=/src,readonly")
 
 # shellcheck disable=SC2016 # expanded inside the container

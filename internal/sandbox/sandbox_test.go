@@ -204,3 +204,17 @@ func TestHostPaths(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentTTY(t *testing.T) {
+	a := testAgent(t)
+	a.TTY = true
+	args, err := a.RunArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkForbidden(t, args)
+	image := slices.Index(args, a.Image)
+	if !slices.Contains(args[:image], "--interactive") || !slices.Contains(args[:image], "--tty") {
+		t.Error("an agent on the user's terminal must get --interactive and --tty before its image")
+	}
+}

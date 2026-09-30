@@ -3,8 +3,11 @@
 # with the given arguments, and writes what the session changed to /out.
 # The host treats everything in /out as untrusted input.
 set -euo pipefail
-cp -a /src/. /work/
-cd /work
+# In a directory of its own: /work belongs to root, and git refuses a
+# repository whose top directory belongs to another user.
+mkdir /work/repo
+cp -a /src/. /work/repo/
+cd /work/repo
 # Claude Code's first-run screens are not part of a Sealroom session.
 printf '{"hasCompletedOnboarding": true}\n' > "$HOME/.claude.json"
 status=0

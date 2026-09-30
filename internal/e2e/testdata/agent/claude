@@ -1,0 +1,12 @@
+#!/bin/sh
+# Stands in for Claude Code in TestSession: probes the way out from inside the
+# sealed agent, and writes what it saw into the repository, so it comes back
+# in the session's patch. The repository is TestSession's.
+probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
+{
+  echo "model=$(probe https://api.anthropic.com/v1/messages -H "authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' -d '{"model":"claude-haiku-4-5-20251001","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')"
+  echo "other-host=$(probe https://example.com/)"
+  echo "run-repository=$(probe https://api.github.com/repos/octocat/Hello-World)"
+  echo "credential-variables=$(env | grep -cE '^[A-Z_]*(TOKEN|KEY)=' )"
+  echo "placeholders=$(env | grep -cE '^[A-Z_]*(TOKEN|KEY)=sealroom-placeholder$')"
+} > sealroom-e2e.txt
