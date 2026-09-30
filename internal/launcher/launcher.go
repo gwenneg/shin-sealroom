@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,9 +36,16 @@ type Options struct {
 
 // Credentials are the user's, handed to the proxy only.
 type Credentials struct {
-	Claude     string
+	Claude     string // empty with Vertex
 	ClaudeAuth proxy.ClaudeAuth
 	GitHub     string
+	Vertex     *Vertex // with proxy.Vertex
+}
+
+// Vertex is how the user reaches Claude on Google Vertex AI.
+type Vertex struct {
+	Project, Region string
+	Credentials     string // the host path of the user's Google credentials
 }
 
 // Terminal is where the session runs.
@@ -105,11 +113,16 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	if err := writeProxyFiles(runDir, ip, opts.Repo, creds); err != nil {
 		return res, err
 	}
+	// The copy of the user's Google credentials leaves the disk with the run.
+	defer os.Remove(filepath.Join(runDir, "google-credentials.json"))
 	p := sandbox.Proxy{
 		Name: "sealroom-" + id + "-proxy", Image: opts.ProxyImage, Network: network, IP: ip,
 		Config: filepath.Join(runDir, "proxy.yaml"), CACert: filepath.Join(runDir, "ca.crt"),
 		CAKey: filepath.Join(runDir, "ca.key"), EnvFile: filepath.Join(runDir, "proxy.env"), Outbound: outbound,
 		Relabel: relabel(rt),
+	}
+	if creds.ClaudeAuth == proxy.Vertex {
+		p.GoogleCredentials = filepath.Join(runDir, "google-credentials.json")
 	}
 	args, err := p.RunArgs()
 	if err != nil {
@@ -134,7 +147,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	a := sandbox.Agent{
 		Name: "sealroom-" + id + "-agent", Image: opts.AgentImage, Network: network, ProxyIP: ip,
 		Plugin: pluginCopy, Repo: src, CACert: p.CACert, Out: res.OutDir, Relabel: relabel(rt),
-		Env: agentEnv(creds.ClaudeAuth), Command: agentCommand(opts.Prompt), TTY: term.TTY,
+		Env: agentEnv(creds), Command: agentCommand(opts.Prompt), TTY: term.TTY,
 	}
 	args, err = a.RunArgs()
 	if err != nil {
@@ -156,12 +169,19 @@ func relabel(rt container.Runtime) bool {
 	return filepath.Base(rt.Bin) == "podman"
 }
 
-// agentEnv holds placeholders only, never a credential.
-func agentEnv(auth proxy.ClaudeAuth) map[string]string {
+// agentEnv holds placeholders only, never a credential. With Vertex, Claude
+// Code sends no Google credential at all: the proxy adds the token.
+func agentEnv(creds Credentials) map[string]string {
 	env := map[string]string{"GH_TOKEN": sandbox.Placeholder}
-	if auth == proxy.APIKey {
+	switch creds.ClaudeAuth {
+	case proxy.Vertex:
+		env["CLAUDE_CODE_USE_VERTEX"] = "1"
+		env["CLAUDE_CODE_SKIP_VERTEX_AUTH"] = "1"
+		env["ANTHROPIC_VERTEX_PROJECT_ID"] = creds.Vertex.Project
+		env["CLOUD_ML_REGION"] = creds.Vertex.Region
+	case proxy.APIKey:
 		env["ANTHROPIC_API_KEY"] = sandbox.Placeholder
-	} else {
+	default:
 		env["CLAUDE_CODE_OAUTH_TOKEN"] = sandbox.Placeholder
 	}
 	for _, k := range []string{"TERM", "COLORTERM"} {
@@ -247,7 +267,14 @@ func makeRunDir(id string) (string, error) {
 // directory around them is the user's alone. The credentials file is read
 // by the runtime's command line, as the user.
 func writeProxyFiles(dir, ip, repo string, creds Credentials) error {
-	cfg, err := proxy.Config(proxy.Run{ProxyIP: ip, Repo: repo, Claude: creds.ClaudeAuth})
+	run := proxy.Run{ProxyIP: ip, Repo: repo, Claude: creds.ClaudeAuth}
+	if creds.ClaudeAuth == proxy.Vertex {
+		if creds.Vertex == nil {
+			return errors.New("Vertex without a project, a region and credentials")
+		}
+		run.VertexProject, run.VertexRegion = creds.Vertex.Project, creds.Vertex.Region
+	}
+	cfg, err := proxy.Config(run)
 	if err != nil {
 		return err
 	}
@@ -255,20 +282,58 @@ func writeProxyFiles(dir, ip, repo string, creds Credentials) error {
 	if err != nil {
 		return err
 	}
-	env, err := proxy.EnvFile(creds.Claude, creds.GitHub)
+	env, err := proxy.EnvFile(proxy.Env{Claude: creds.Claude, GitHub: creds.GitHub, Vertex: creds.ClaudeAuth == proxy.Vertex})
 	if err != nil {
 		return err
 	}
-	for _, f := range []struct {
+	files := []struct {
 		name string
 		data []byte
 		mode os.FileMode
-	}{{"proxy.yaml", cfg, 0o644}, {"ca.crt", cert, 0o644}, {"ca.key", key, 0o644}, {"proxy.env", env, 0o600}} {
+	}{{"proxy.yaml", cfg, 0o644}, {"ca.crt", cert, 0o644}, {"ca.key", key, 0o644}, {"proxy.env", env, 0o600}}
+	if creds.ClaudeAuth == proxy.Vertex {
+		// A copy: the mount is relabeled for SELinux, which must never touch
+		// the user's own file.
+		google, err := readGoogleCredentials(creds.Vertex.Credentials)
+		if err != nil {
+			return err
+		}
+		files = append(files, struct {
+			name string
+			data []byte
+			mode os.FileMode
+		}{"google-credentials.json", google, 0o644})
+	}
+	for _, f := range files {
 		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, f.mode); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// readGoogleCredentials reads the user's Application Default Credentials and
+// checks they are a user login or a service account key, the kinds the
+// proxy can mint tokens from.
+func readGoogleCredentials(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("Google credentials: %w (run gcloud auth application-default login)", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 64<<10 {
+		return nil, fmt.Errorf("Google credentials %s: not a credentials file", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var kind struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(b, &kind); err != nil || (kind.Type != "authorized_user" && kind.Type != "service_account") {
+		return nil, fmt.Errorf("Google credentials %s: want a user login (gcloud auth application-default login) or a service account key", path)
+	}
+	return b, nil
 }
 
 // createNetwork creates the internal network on a random private subnet,

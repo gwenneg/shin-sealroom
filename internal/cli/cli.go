@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/term"
@@ -46,6 +47,11 @@ Anthropic API key. It is only ever handed to the proxy.
 Environment:
   CLAUDE_CODE_OAUTH_TOKEN      a subscription token, used instead of the keychain
   ANTHROPIC_API_KEY            or an API key
+  CLAUDE_CODE_USE_VERTEX=1     Claude on Google Vertex AI instead, with
+  ANTHROPIC_VERTEX_PROJECT_ID  the project and
+  CLOUD_ML_REGION              the region, and your Google credentials from
+                               gcloud auth application-default login, or
+  GOOGLE_APPLICATION_CREDENTIALS
   SEALROOM_RUNTIME             podman or docker; Podman first when both are installed
   SEALROOM_PROXY_IMAGE         the proxy image, sealroom-proxy:dev by default
   SEALROOM_AGENT_IMAGE         the agent image, sealroom-agent:dev by default
@@ -135,7 +141,12 @@ func run(args []string, stderr io.Writer) int {
 func credentials() (launcher.Credentials, error) {
 	var c launcher.Credentials
 	var err error
-	if c.Claude, c.ClaudeAuth, err = creds.Load(creds.System()); err != nil {
+	if v := os.Getenv("CLAUDE_CODE_USE_VERTEX"); v == "1" || strings.EqualFold(v, "true") {
+		if c.Vertex, err = vertex(); err != nil {
+			return c, err
+		}
+		c.ClaudeAuth = proxy.Vertex
+	} else if c.Claude, c.ClaudeAuth, err = creds.Load(creds.System()); err != nil {
 		return c, err
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
@@ -144,6 +155,24 @@ func credentials() (launcher.Credentials, error) {
 	}
 	c.GitHub = strings.TrimSpace(string(out))
 	return c, nil
+}
+
+// vertex reads Claude Code's own Vertex settings from the environment, and
+// the user's Google credentials from where gcloud saves them.
+func vertex() (*launcher.Vertex, error) {
+	v := &launcher.Vertex{Project: os.Getenv("ANTHROPIC_VERTEX_PROJECT_ID"), Region: os.Getenv("CLOUD_ML_REGION")}
+	if !proxy.ValidVertex(v.Project, v.Region) {
+		return nil, fmt.Errorf("CLAUDE_CODE_USE_VERTEX is set: ANTHROPIC_VERTEX_PROJECT_ID %q and CLOUD_ML_REGION %q must be a project and a region", v.Project, v.Region)
+	}
+	v.Credentials = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if v.Credentials == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		v.Credentials = filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
+	}
+	return v, nil
 }
 
 func login(stdout, stderr io.Writer) int {

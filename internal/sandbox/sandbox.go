@@ -29,6 +29,10 @@ const (
 	CACert    = "/etc/sealroom/ca.crt"
 )
 
+// GoogleCredentialsDst is where the proxy finds the user's Google
+// credentials, with Vertex. internal/proxy points Google's libraries at it.
+const GoogleCredentialsDst = "/etc/sealroom/google-credentials.json"
+
 // Placeholder is the only value the agent holds for any credential. The proxy
 // swaps it for the real one, and refuses requests that do not carry it.
 const Placeholder = "sealroom-placeholder"
@@ -64,13 +68,20 @@ type Proxy struct {
 	EnvFile  string // host path of the credentials, read by the proxy only
 	Outbound string // the network that reaches the internet
 	Relabel  bool   // Podman: label the mounted files for SELinux
+	// GoogleCredentials is the host path of a copy of the user's Google
+	// credentials, with Vertex; empty otherwise.
+	GoogleCredentials string
 }
 
 // RunArgs returns the arguments that start the proxy on the internal network.
 // ConnectArgs then attaches it to the outbound network: Docker takes a single
 // network at start.
 func (p Proxy) RunArgs() ([]string, error) {
-	for _, path := range []string{p.Config, p.CACert, p.CAKey, p.EnvFile} {
+	paths := []string{p.Config, p.CACert, p.CAKey, p.EnvFile}
+	if p.GoogleCredentials != "" {
+		paths = append(paths, p.GoogleCredentials)
+	}
+	for _, path := range paths {
 		if err := checkHostPath(path); err != nil {
 			return nil, err
 		}
@@ -89,10 +100,11 @@ func (p Proxy) RunArgs() ([]string, error) {
 		"--mount", bind(p.Config, "/etc/sealroom/proxy.yaml", true, label(p.Relabel, private)),
 		"--mount", bind(p.CACert, "/etc/sealroom/ca.crt", true, label(p.Relabel, shared)),
 		"--mount", bind(p.CAKey, "/etc/sealroom/ca.key", true, label(p.Relabel, private)),
-		p.Image,
-		"-config", "/etc/sealroom/proxy.yaml",
 	}
-	return args, nil
+	if p.GoogleCredentials != "" {
+		args = append(args, "--mount", bind(p.GoogleCredentials, GoogleCredentialsDst, true, label(p.Relabel, private)))
+	}
+	return append(args, p.Image, "-config", "/etc/sealroom/proxy.yaml"), nil
 }
 
 // ConnectArgs returns the arguments that attach the proxy to the outbound
@@ -124,7 +136,7 @@ type Agent struct {
 // credential variable carries the placeholder, never a real value.
 var allowedEnv = map[string]bool{
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "ANTHROPIC_API_KEY": true, "GH_TOKEN": true,
-	"CLAUDE_CODE_USE_VERTEX": true, "CLOUD_ML_REGION": true, "ANTHROPIC_VERTEX_PROJECT_ID": true,
+	"CLAUDE_CODE_USE_VERTEX": true, "CLAUDE_CODE_SKIP_VERTEX_AUTH": true, "CLOUD_ML_REGION": true, "ANTHROPIC_VERTEX_PROJECT_ID": true,
 	"TERM": true, "COLORTERM": true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 }
