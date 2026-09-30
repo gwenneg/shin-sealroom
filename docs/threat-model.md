@@ -47,6 +47,8 @@ Everything that comes from the plugin, and everything the agent container writes
 | Make the host read, show or post one of its own files | Every file of the output directory must be a regular file inside it: a link is refused, never followed |
 | Rewrite what the user reviews with terminal escape sequences | Everything shown is sanitised: control characters and invisible or direction-changing characters are shown as escapes |
 | Slip an option into the push or the pull request | Every value from the session reaches `gh` as one `--flag=value` argument, the push never forces, and the target repository and credential helper are the launcher's |
+| Declare its way to a credential | A declaration can never name a host where Sealroom adds the user's credentials, and adds no credential to what it opens |
+| Declare a way out the user does not notice | Every declared access is shown, with its reason, sanitised, and the run starts only on the user's yes |
 | Hide a harmful change in the pull request | Not prevented. The user reviews the diff before anything leaves |
 | Escape the container | Non-root, no capabilities, `no-new-privileges`, read-only root, resource limits. A kernel exploit remains possible and is named as a limit |
 | Exhaust the machine | Memory, CPU, process and time limits |
@@ -56,6 +58,7 @@ Everything that comes from the plugin, and everything the agent container writes
 
 - **What the model sees can leave through the model.** A plugin can have the repository's content sent to the model. It reaches only the user's own account with their provider, as any use of Claude Code does.
 - **The pull request is a channel out.** Whatever the plugin writes into the diff or the pull request's text becomes visible once pushed. The review before the push is the control, and a large diff is hard to review.
+- **What the user accepts from a declaration leaves the machine.** A declared host receives whatever the plugin sends it.
 - **Harm within what is allowed.** A plugin can make a harmful change that the user approves, or spend the user's model quota.
 - **The containers share a kernel.** They run on the host's kernel, or on the kernel of the virtual machine Docker and Podman use on macOS, so a kernel flaw can break out.
 - **With Vertex, the query string is not checked.** The proxy's rules match the host, the method and the path. A key in the query string of a model request could name another Google project; the request still targets the user's project in its path, with the user's token.

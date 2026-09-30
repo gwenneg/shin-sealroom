@@ -9,6 +9,7 @@
 | `internal/launcher/` | A sealed session: the run directory, the clone, the networks, the proxy, the agent on the user's terminal, and the cleanup |
 | `internal/publish/` | After the user's yes: where to push, the push, the fork, and the pull request, with the user's GitHub login |
 | `internal/credentials/` | The Claude credential: from the environment, or from the keychain that `sealroom login` saves it in |
+| `internal/declare/` | What a plugin declares in `sealroom.json`, read as untrusted input and validated |
 | `internal/review/` | Reads the session's output as untrusted input, applies it to the host's clone, and shows it, sanitised |
 | `internal/container/` | Finds Podman or Docker and runs its commands, with arguments from `internal/sandbox` only |
 | `images/agent/` | The agent image: Claude Code and the GitHub CLI, pinned by checksum, the `git` and `gh` stand-ins, the session script, and its smoke test |

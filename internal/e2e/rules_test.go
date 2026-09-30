@@ -82,7 +82,9 @@ func TestProxyRules(t *testing.T) {
 	const runRepo, otherRepo = "cli/cli", "golang/go"
 
 	dir := workDir(t)
-	cfg, err := proxy.Config(proxy.Run{ProxyIP: "172.29.0.2", Repo: runRepo, Claude: proxy.Subscription})
+	cfg, err := proxy.Config(proxy.Run{ProxyIP: "172.29.0.2", Repo: runRepo, Claude: proxy.Subscription,
+		// As a plugin would declare, and the user accept.
+		Declared: []proxy.Allow{{Host: "example.org", Methods: []string{"GET"}, Paths: []string{"/"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +171,18 @@ func TestProxyRules(t *testing.T) {
 		{"a git push to the run's repository", refused, []string{"-X", "POST", "https://github.com/" + runRepo + "/git-receive-pack"}},
 		{"another host", refused, []string{"https://example.com/"}},
 	}
+	// The declared access, judged from the proxy's own log: example.org
+	// sets neither request ID.
+	probe(t, "https://example.org/")
+	probe(t, "https://example.org/undeclared")
+	decisions := rejections(t, must(t, "logs", p.Name))
+	if got, ok := decisions["example.org/"]; !ok || got != "" {
+		t.Errorf("the declared access was %q, want it allowed", got)
+	}
+	if got := decisions["example.org/undeclared"]; got != "allowlist" {
+		t.Errorf("an undeclared path of a declared host was %q, want refused by the allowlist", got)
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			code, upstream := probe(t, tt.args...)

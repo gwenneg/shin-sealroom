@@ -127,7 +127,23 @@ The launcher then shows the commits, the changed files, the pull request's title
 
 ## What a plugin declares
 
-A plugin can need more than the defaults, such as a host it calls or a permission it needs on GitHub. It declares these in a Sealroom file in its repository, and the launcher shows them to the user before the run. A declaration only adds allowed requests, never credentials: a host declared by the plugin is reached without any of the user's credentials.
+A plugin that needs a host beyond Sealroom's defaults declares it in `sealroom.json`, at its root:
+
+```json
+{
+  "network": [
+    {"host": "api.example.com", "methods": ["GET"], "paths": ["/v1/*"], "why": "Reads the release notes"}
+  ]
+}
+```
+
+The file comes from the plugin, so the launcher reads it as untrusted input, from Sealroom's copy of the plugin: a regular file of at most 16 KiB, never through a link, parsed strictly, with unknown fields refused, and at most 20 accesses. Each access needs a plain DNS name, methods, paths starting with `/` with no dot-dot segment, and a reason of at most 200 bytes. Refused outright:
+
+- the hosts where Sealroom adds the user's credentials: the Anthropic API and every Anthropic host, and every `googleapis.com` host, Vertex and Google's token endpoint included;
+- on GitHub, anything but a git fetch of `github.com` (`/info/refs` and `/git-upload-pack`): the defaults already allow reads of the API and of raw files, and a page of `github.com` could carry data in its path to a repository's traffic insights;
+- addresses, ports, wildcards, `localhost`, and `.local` and `.internal` names.
+
+Before anything starts, the launcher shows each access with its reason, sanitised, and says that no credential of the user's is ever added to them and that what the plugin sends there leaves the machine. The run goes on only on the user's yes. An accepted access only adds an allowed request to the proxy's rules: no credential is added to it, and on GitHub the rules that drop the agent's own headers and keep the user's token to the run's repository still apply.
 
 ## Platforms
 
@@ -146,13 +162,13 @@ Built and tested in CI, with Docker and rootless Podman on Linux:
 - `sealroom run` from the session to the pull request, with a Claude subscription token or an Anthropic API key from the keychain or the environment, and the GitHub token from the GitHub CLI. The push and the pull request were also run for real on a test repository, with a signed commit.
 - `sealroom login` and `logout`, with the macOS Keychain, checked by hand.
 - `sealroom clean`, and the removal of each run's directory and secrets once they are no longer needed.
+- what a plugin declares, shown to the user and allowed on their yes.
 - both images, built for amd64 and arm64. Publishing them to GitHub's container registry, with a build provenance attestation, is ready but off until the maintainer turns it on.
 
 A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.
 
 Not built yet:
 
-- what a plugin declares;
 - the launcher's use of the published images: it still uses images built locally.
 
 Not tried yet:
