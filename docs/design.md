@@ -68,7 +68,7 @@ Sealroom does not use its published images or binaries, which are not signed. It
 | Destination | Allowed | Credential added by the proxy |
 |---|---|---|
 | Anthropic API | `POST` to the model endpoints, and Claude Code's read-only policy endpoints | The user's Claude credential, only in place of the agent's placeholder. A request without the placeholder is refused, so a plugin's own key never gets through |
-| Google Vertex AI | `POST` to the model endpoints of the user's project and region | An access token the proxy mints from the user's Google credentials. The agent runs Claude Code in Vertex gateway mode and never holds a Google credential |
+| Google Vertex AI | `POST` to Anthropic's models in the user's project and region, and nothing else on Google | An access token the proxy mints from the user's Google credentials. The agent runs Claude Code with `CLAUDE_CODE_SKIP_VERTEX_AUTH` and never holds a Google credential |
 | GitHub API | `GET` and `HEAD` only | The user's GitHub token, only on the repository of the run. Other repositories are read anonymously |
 | GitHub git | Read-only fetch of the repository of the run, and of what the plugin declares | None |
 | Anything else | Refused, unless the plugin declares it and the user accepts it before the run | None |
@@ -94,6 +94,8 @@ The credentials live on the host and in the proxy container, never in the agent 
 | Google Vertex AI | The user's Application Default Credentials, including a `gcloud auth application-default login`, mounted read-only into the proxy | Model requests to one project and region |
 | GitHub, during the run | The user's `gh` login | Reads on the repository of the run |
 | GitHub, after the run | The user's `gh` login, used by the launcher on the host | The push and the pull request, after the user's yes |
+
+With Vertex, set as for Claude Code itself (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`), the launcher copies the user's Application Default Credentials, a user login from `gcloud auth application-default login` or a service account key, into the run directory, and mounts the copy into the proxy only; the copy is deleted when the run ends, and the user's own file is never mounted, so SELinux relabeling never touches it. iron-proxy's `gcp_auth` mints short-lived access tokens from it and adds them only to requests for Anthropic's models in the user's project and region. Any other project, region or publisher is refused by the allowlist, so a request cannot reach a project of anyone else's, and headers such as `x-goog-user-project` or an API key of the agent's never reach Google. The Anthropic API is not reachable at all with Vertex.
 
 `sealroom login` reads the Claude credential without showing it, and saves it in the operating system's keychain: the login Keychain on macOS, through `security`, and the Secret Service on Linux, such as GNOME Keyring or KWallet, through `secret-tool`. Both tools receive the secret on their standard input, never in their arguments, where any process on the machine could read it. Only one credential is saved: saving one kind removes the other, and `sealroom logout` removes it. A credential must look like a subscription token or an API key, with nothing but letters, digits, dashes and underscores, so none can carry a newline into a file or a space into a keychain command. The environment variables, when set, come first, for scripts.
 
@@ -147,13 +149,12 @@ A prototype also ran the whole design by hand on a real plugin and repository, w
 
 Not built yet:
 
-- Google Vertex AI, in the proxy and the launcher;
 - what a plugin declares;
 - the launcher's use of the published images: it still uses images built locally.
 
 Not tried yet:
 
-- **Google Vertex AI**: the proxy's support for Google credentials was read in its source, not run, and an organization's policy may refuse requests from outside its own network.
+- **Google Vertex AI with real credentials**: the rules are probed against the real proxy with fake credentials, which shows each request reaching the right step, but no real token has been minted, and an organization's policy may refuse requests from outside its own network.
 - **An Anthropic API key in a real session**: only the proxy's handling was checked, with a fake key.
 - The push to a fork, and creating the fork.
 - Copy and paste from the session in common terminals.

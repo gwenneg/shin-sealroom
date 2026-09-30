@@ -60,6 +60,8 @@ CONTAINER_RUNTIME=podman SEALROOM_E2E=1 go test -count=1 -v ./internal/e2e/
 
 Both end-to-end tests must pass. A denial shows as a permission error on a mounted file, and in `sudo ausearch -m avc -ts recent`.
 
+Vertex with real credentials cannot be checked in CI. With access to Claude on Vertex, and Claude Code's own Vertex variables set (`CLAUDE_CODE_USE_VERTEX=1`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`) after `gcloud auth application-default login`, a session must answer, and the proxy's log (`podman logs` or `docker logs` of the `-proxy` container while the session runs) must show `"injected"` on the model's requests. A refusal from Google, rather than from the proxy, can mean that the organization only accepts requests from its own network or devices.
+
 The keychain on Linux, the Secret Service, cannot be checked in CI either. In a desktop session with GNOME Keyring or KWallet, `go run ./cmd/sealroom login` must save the credential (`secret-tool search service sealroom` shows it), a run must find it, and `go run ./cmd/sealroom logout` must remove it.
 
 ## Go version

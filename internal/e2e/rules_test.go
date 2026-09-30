@@ -92,7 +92,7 @@ func TestProxyRules(t *testing.T) {
 	}
 	// Fake credentials: a request that carries one gets a 401 from the real
 	// service, which proves the proxy added it.
-	env, err := proxy.EnvFile("sk-ant-oat01-sealroom-e2e-fake", "ghp_sealroomE2EFakeToken")
+	env, err := proxy.EnvFile(proxy.Env{Claude: "sk-ant-oat01-sealroom-e2e-fake", GitHub: "ghp_sealroomE2EFakeToken"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,6 +33,7 @@ Everything that comes from the plugin, and everything the agent container writes
 | Find a credential on disk after the run | The file that hands the credentials to the proxy is deleted as soon as the proxy is created. The Claude credential is kept in the operating system's keychain, and handed to the keychain tools on their standard input, never in their arguments |
 | Send data to a host of the attacker's | The agent container has no route out. The proxy refuses every host that is not allowed |
 | Send data through an allowed host with the attacker's own credential | The proxy drops every header that is not on its list, requires the placeholder on the model API, and adds the user's GitHub token only on the repository of the run |
+| Send data to a Google Cloud project of the attacker's, with Vertex | Only Anthropic's models in the user's project and region are allowed, and the agent's own Google headers are dropped |
 | Store data on the provider for later retrieval | The Files API is refused. Only the model endpoints are allowed |
 | Push the code, or other data, to a repository of the attacker's | GitHub writes are refused. The push happens on the host, after the user's review, to the repository the user named |
 | Use the user's GitHub token beyond the run | It is added only to reads on the repository of the run |
@@ -57,4 +58,5 @@ Everything that comes from the plugin, and everything the agent container writes
 - **The pull request is a channel out.** Whatever the plugin writes into the diff or the pull request's text becomes visible once pushed. The review before the push is the control, and a large diff is hard to review.
 - **Harm within what is allowed.** A plugin can make a harmful change that the user approves, or spend the user's model quota.
 - **The containers share a kernel.** They run on the host's kernel, or on the kernel of the virtual machine Docker and Podman use on macOS, so a kernel flaw can break out.
+- **With Vertex, the query string is not checked.** The proxy's rules match the host, the method and the path. A key in the query string of a model request could name another Google project; the request still targets the user's project in its path, with the user's token.
 - **Reads without a token can carry data in their path.** Anonymous reads of public GitHub content are allowed, and their paths are chosen by the agent. Sealroom relies on GitHub not showing those reads to the owners of the content.

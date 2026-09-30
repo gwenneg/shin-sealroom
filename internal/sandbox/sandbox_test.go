@@ -276,3 +276,24 @@ func TestRelabel(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyGoogleCredentials(t *testing.T) {
+	p := testProxy(t)
+	p.GoogleCredentials = filepath.Join(t.TempDir(), "google-credentials.json")
+	args, err := p.RunArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkForbidden(t, args)
+	want := "type=bind,src=" + p.GoogleCredentials + ",dst=" + GoogleCredentialsDst + ",readonly"
+	if !slices.Contains(mounts(args), want) || len(mounts(args)) != 4 {
+		t.Errorf("proxy mounts %v, want the three and %s", mounts(args), want)
+	}
+	if slices.Index(args, p.Image) < slices.Index(args, want) {
+		t.Error("the mount comes after the image, where it would be an argument of the proxy")
+	}
+	p.GoogleCredentials = "/"
+	if _, err := p.RunArgs(); err == nil {
+		t.Error("the root directory was accepted as the Google credentials")
+	}
+}
