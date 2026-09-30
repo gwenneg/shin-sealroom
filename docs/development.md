@@ -30,6 +30,23 @@ go run ./cmd/sealroom run <plugin-dir> --repo <owner/repo> --prompt '/<plugin>:<
 
 The run directory is under the user's cache directory, printed at the start. `SEALROOM_RUNTIME` picks `podman` or `docker`; Podman comes first when both are installed. After the session, the launcher applies its changes to a branch of the run's clone, shows them, and asks before pushing and opening the pull request. On no, the branch stays in the run's `src` directory.
 
+## Published images
+
+The `Images` workflow builds both images for amd64 and arm64 on every pull request that changes them, and on `main`. Publishing them is a separate decision, off until the repository variable `PUBLISH_IMAGES` is set to `true`. Then, on `main`, the workflow pushes them to GitHub's container registry, as `ghcr.io/gwenneg/sealroom-proxy` and `ghcr.io/gwenneg/sealroom-agent`, tagged with the full commit SHA and `main`, and attests their build provenance. To check that an image was built by this repository's workflow:
+
+```
+gh attestation verify oci://ghcr.io/gwenneg/sealroom-agent:main --owner gwenneg
+```
+
+A package that a workflow creates inherits the visibility of the repository, which is public. To publish privately first, create both packages as private before setting the variable:
+
+1. `gh auth refresh -s write:packages`, then log in to the registry: `gh auth token | docker login ghcr.io -u <user> --password-stdin`.
+2. Push any small image to each name, for example a build of `images/proxy` tagged `ghcr.io/gwenneg/sealroom-proxy:placeholder`, and the same for `sealroom-agent`. Packages pushed this way start private.
+3. In each package's settings on GitHub, connect it to this repository and give the repository's Actions write access.
+4. Set `PUBLISH_IMAGES` to `true` in the repository's Actions variables.
+
+The workflow's pushes then keep the packages private, until each is made public in its settings. The launcher still uses the locally built `:dev` images: using the published ones, pinned by digest and verified, comes next.
+
 ## Checking on Fedora
 
 SELinux cannot be checked in CI, since GitHub's Linux runners do not enforce it. On Fedora or RHEL, with SELinux enforcing (`getenforce` prints `Enforcing`) and rootless Podman:

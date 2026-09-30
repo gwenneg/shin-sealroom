@@ -141,6 +141,7 @@ Built and tested in CI, with Docker and rootless Podman on Linux:
 - the proxy's rules for a run, probed against the real proxy and services;
 - `sealroom run` from the session to the pull request, with a Claude subscription token or an Anthropic API key from the keychain or the environment, and the GitHub token from the GitHub CLI. The push and the pull request were also run for real on a test repository, with a signed commit.
 - `sealroom login` and `logout`, with the macOS Keychain, checked by hand.
+- both images, built for amd64 and arm64. Publishing them to GitHub's container registry, with a build provenance attestation, is ready but off until the maintainer turns it on.
 
 A prototype also ran the whole design by hand on a real plugin and repository, with a Claude subscription, through the review on the host with a signed commit.
 
@@ -148,7 +149,7 @@ Not built yet:
 
 - Google Vertex AI, in the proxy and the launcher;
 - what a plugin declares;
-- published images: they are built locally for now.
+- the launcher's use of the published images: it still uses images built locally.
 
 Not tried yet:
 

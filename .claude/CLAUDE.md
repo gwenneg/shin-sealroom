@@ -19,6 +19,7 @@ Sealroom runs untrusted plugins with the user's credentials within reach of a pr
 - A change to what the proxy allows, or to the containers' restrictions, updates the design or the threat model in the same pull request.
 - **Everything added is at its latest release**: languages, dependencies, GitHub Actions, tools, container images, Claude Code. Look the version up at the time of adding, never reuse one from memory or from the local toolchain. Actions and images are pinned by SHA or digest, with the version in a comment.
 - A new dependency needs a reason in the pull request description.
+- Workflows never interpolate a step's output or an event's value into a `run:` script: they pass it through `env:`.
 
 ## Supported platforms
 
