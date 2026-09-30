@@ -28,6 +28,12 @@ sealroom run <plugin> --repo <owner/repo>
 
 The launcher drives Podman or Docker directly, Podman first when both are installed. It does not depend on Compose, whose command and behaviour differ between Docker's plugin, the standalone binary and Podman.
 
+## The run directory
+
+Each run gets a directory under the user's cache directory (`~/.cache/sealroom/runs` on Linux, `~/Library/Caches/sealroom/runs` on macOS). It is under the home directory, so a runtime in a virtual machine that shares only the home directory, as on macOS, can mount it. Only the user can enter it. It holds the clone, the proxy's rules, the run's CA and the proxy's credentials file, and the output directory. The files the proxy reads are readable by all, since the proxy runs as its own user, but the directory around them is the user's alone. The credentials file is readable by the user only: the runtime's command line reads it on the proxy's behalf. The output directory is writable by the agent's user.
+
+The launcher creates the internal network on a random private subnet, starts the proxy and waits until it listens, then attaches the agent to the user's terminal. Ctrl-C belongs to the session while it runs. When the session ends, however it ends, the launcher removes the proxy and both networks.
+
 ## The agent container
 
 | Restriction | Why |
@@ -102,6 +108,12 @@ The launcher then shows the commits, the changed files, the pull request's title
 
 A plugin can need more than the defaults, such as a host it calls or a permission it needs on GitHub. It declares these in a Sealroom file in its repository, and the launcher shows them to the user before the run. A declaration only adds allowed requests, never credentials: a host declared by the plugin is reached without any of the user's credentials.
 
+## Platforms
+
+Sealroom runs with rootless Podman or Docker, on Linux and on macOS, and CI runs the end-to-end tests with both Docker and rootless Podman on Linux. The containers' restrictions use only options both runtimes share: the agent's in-memory home and work directories are writable through their mode, since Podman's `--tmpfs` has no owner option, and the session works in a directory the agent creates, which git accepts as the agent's own.
+
+On Linux, what the agent writes to the output directory belongs to the agent's user, or to one of the user's subordinate users with rootless Podman, so the user cannot remove it directly: it has to be removed through a container, which the launcher does not do yet. SELinux, enforcing on Fedora and RHEL, is not handled yet: its labels keep a container from reading files in the home directory until the mounts are relabeled.
+
 ## Status
 
 A prototype proved the design end to end on a real plugin and repository, with a Claude subscription: the lock-down, the subscription token added by the proxy, the refusal of foreign credentials, the read-only GitHub access that let the plugin check a branch ruleset, the recorded push and pull request, and the review on the host with a signed commit.
@@ -112,3 +124,4 @@ Still to prove:
 - **Google Vertex AI**: not tried yet. The proxy's support for Google credentials was read in its source, not run, and an organization's policy may refuse requests from outside its own network.
 - The push to a fork and the pull request creation.
 - Copy and paste from the session in common terminals.
+- SELinux, on Fedora and RHEL.

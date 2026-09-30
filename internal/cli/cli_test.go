@@ -2,11 +2,20 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/gwenneg/sealroom/internal/launcher"
 )
 
 func TestRun(t *testing.T) {
+	session = func(o launcher.Options) error {
+		if o.Repo == "o/fails" {
+			return errors.New("the session failed")
+		}
+		return nil
+	}
 	tests := []struct {
 		name       string
 		args       []string
@@ -21,7 +30,9 @@ func TestRun(t *testing.T) {
 		{"run with a flag first", []string{"run", "--repo", "o/r"}, Usage, "", "takes a plugin"},
 		{"run without a repository", []string{"run", "plugin"}, Usage, "", "takes a plugin"},
 		{"run with an extra argument", []string{"run", "plugin", "--repo", "o/r", "extra"}, Usage, "", "takes a plugin"},
-		{"run not implemented", []string{"run", "plugin", "--repo", "o/r"}, Failure, "", "not implemented"},
+		{"run", []string{"run", "plugin", "--repo", "o/r"}, OK, "", ""},
+		{"run with a prompt", []string{"run", "plugin", "--repo", "o/r", "--prompt", "/plugin:start"}, OK, "", ""},
+		{"run that fails", []string{"run", "plugin", "--repo", "o/fails"}, Failure, "", "the session failed"},
 		{"unknown command", []string{"frobnicate"}, Usage, "", `unknown command "frobnicate"`},
 	}
 	for _, tt := range tests {
@@ -38,5 +49,16 @@ func TestRun(t *testing.T) {
 				t.Errorf("stderr %q does not contain %q", stderr.String(), tt.wantStderr)
 			}
 		})
+	}
+}
+
+func TestRunOptions(t *testing.T) {
+	var got launcher.Options
+	session = func(o launcher.Options) error { got = o; return nil }
+	t.Setenv("SEALROOM_AGENT_IMAGE", "agent@sha256:x")
+	Run([]string{"run", "./p", "--repo", "o/r", "--prompt", "/p:start"}, &bytes.Buffer{}, &bytes.Buffer{})
+	want := launcher.Options{Plugin: "./p", Repo: "o/r", Prompt: "/p:start", ProxyImage: "sealroom-proxy:dev", AgentImage: "agent@sha256:x"}
+	if got != want {
+		t.Errorf("options %+v, want %+v", got, want)
 	}
 }

@@ -112,6 +112,9 @@ type Agent struct {
 	Out     string // host path of the output directory, the only writable mount
 	Env     map[string]string
 	Command []string
+	// TTY attaches the agent to the user's terminal. Without it, the agent
+	// runs with no input, as in tests.
+	TTY bool
 }
 
 // allowedEnv lists the environment variables the agent may receive. Every
@@ -134,7 +137,7 @@ func (a Agent) RunArgs() ([]string, error) {
 		}
 	}
 	args := []string{
-		"run", "--rm", "--interactive", "--tty", "--pull", "never",
+		"run", "--rm", "--pull", "never",
 		"--name", a.Name,
 		"--network", a.Network.Name,
 		"--dns", a.ProxyIP,
@@ -143,9 +146,11 @@ func (a Agent) RunArgs() ([]string, error) {
 		"--security-opt", "no-new-privileges",
 		"--user", fmt.Sprintf("%d:%d", AgentUID, AgentGID),
 		"--memory", Memory, "--cpus", CPUs, "--pids-limit", PidsLimit,
+		// Writable by the agent's user, the only user in the container.
+		// Podman's --tmpfs has no uid option, so the mode does it on both runtimes.
 		"--tmpfs", "/tmp",
-		"--tmpfs", fmt.Sprintf("/home/agent:uid=%d,gid=%d", AgentUID, AgentGID),
-		"--tmpfs", fmt.Sprintf("%s:uid=%d,gid=%d", WorkDir, AgentUID, AgentGID),
+		"--tmpfs", "/home/agent:mode=1777",
+		"--tmpfs", WorkDir + ":mode=1777",
 		"--mount", readOnly(a.Plugin, PluginDir),
 		"--mount", readOnly(a.Repo, RepoDir),
 		"--mount", readOnly(a.CACert, CACert),
@@ -168,6 +173,9 @@ func (a Agent) RunArgs() ([]string, error) {
 			return nil, fmt.Errorf("environment variable %s has a newline or NUL", k)
 		}
 		args = append(args, "--env", k+"="+v)
+	}
+	if a.TTY {
+		args = append(args, "--interactive", "--tty")
 	}
 	args = append(args, a.Image)
 	return append(args, a.Command...), nil
