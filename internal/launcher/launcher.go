@@ -128,7 +128,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 	defer os.Remove(filepath.Join(runDir, "google-credentials.json"))
 	p := sandbox.Proxy{
 		Name: "sealroom-" + id + "-proxy", Image: opts.ProxyImage, Network: network, IP: ip,
-		Config: filepath.Join(runDir, "proxy.yaml"), CACert: filepath.Join(runDir, "ca.crt"),
+		Config: filepath.Join(runDir, "proxy.json"), CACert: filepath.Join(runDir, "ca.crt"),
 		CAKey: filepath.Join(runDir, "ca.key"), EnvFile: filepath.Join(runDir, "proxy.env"), Outbound: outbound,
 		Relabel: relabel(rt),
 	}
@@ -160,7 +160,7 @@ func Run(rt container.Runtime, opts Options, creds Credentials, term Terminal) (
 
 	a := sandbox.Agent{
 		Name: "sealroom-" + id + "-agent", Image: opts.AgentImage, Network: network, ProxyIP: ip,
-		Plugin: pluginCopy, Repo: src, CACert: p.CACert, Out: res.OutDir, Relabel: relabel(rt),
+		Plugin: pluginCopy, Repo: src, CACert: p.CACert, Hosts: filepath.Join(runDir, "hosts"), Out: res.OutDir, Relabel: relabel(rt),
 		Env: agentEnv(creds), Command: agentCommand(opts.Prompt), TTY: term.TTY,
 	}
 	args, err = a.RunArgs()
@@ -315,7 +315,11 @@ func writeProxyFiles(dir, ip, repo string, creds Credentials, declared declare.D
 	if err != nil {
 		return err
 	}
-	cert, key, err := proxy.NewCA(time.Now())
+	hosts, err := proxy.Hosts(cfg)
+	if err != nil {
+		return err
+	}
+	cert, key, err := proxy.NewCA(time.Now(), hosts)
 	if err != nil {
 		return err
 	}
@@ -327,7 +331,7 @@ func writeProxyFiles(dir, ip, repo string, creds Credentials, declared declare.D
 		name string
 		data []byte
 		mode os.FileMode
-	}{{"proxy.yaml", cfg, 0o644}, {"ca.crt", cert, 0o644}, {"ca.key", key, 0o644}, {"proxy.env", env, 0o600}}
+	}{{"proxy.json", cfg, 0o644}, {"ca.crt", cert, 0o644}, {"ca.key", key, 0o644}, {"proxy.env", env, 0o600}, {"hosts", []byte(sandbox.Hosts), 0o644}}
 	if creds.ClaudeAuth == proxy.Vertex {
 		// A copy: the mount is relabeled for SELinux, which must never touch
 		// the user's own file.
@@ -394,7 +398,7 @@ func waitListening(rt container.Runtime, name string) error {
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		logs, _ := rt.Combined("logs", name)
-		if strings.Contains(logs, "https proxy starting") {
+		if strings.Contains(logs, "sealroom proxy listening") {
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)

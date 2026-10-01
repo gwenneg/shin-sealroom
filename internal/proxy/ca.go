@@ -6,10 +6,14 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/gwenneg/sealroom/internal/egress"
 )
 
 // CALifetime bounds how long the run's CA is valid. A run's CA is created for
@@ -19,7 +23,14 @@ const CALifetime = 24 * time.Hour
 // NewCA creates the run's certificate authority, which the proxy signs its
 // certificates with and only the agent trusts. It returns the certificate and
 // the private key, PEM-encoded.
-func NewCA(now time.Time) (certPEM, keyPEM []byte, err error) {
+//
+// The CA is constrained to names: a certificate it signs for any other name
+// is invalid, so even its key, if it leaked, could not impersonate anything
+// but the run's own hosts.
+func NewCA(now time.Time, names []string) (certPEM, keyPEM []byte, err error) {
+	if len(names) == 0 {
+		return nil, nil, errors.New("a CA for no name")
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating the CA key: %w", err)
@@ -37,7 +48,9 @@ func NewCA(now time.Time) (certPEM, keyPEM []byte, err error) {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		// The CA signs leaf certificates only, never another CA.
-		MaxPathLenZero: true,
+		MaxPathLenZero:              true,
+		PermittedDNSDomainsCritical: true,
+		PermittedDNSDomains:         names,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -49,4 +62,14 @@ func NewCA(now time.Time) (certPEM, keyPEM []byte, err error) {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), nil
+}
+
+// Hosts returns the hosts a run's rules name, the names its CA is
+// constrained to.
+func Hosts(config []byte) ([]string, error) {
+	var cfg egress.Config
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg.Hosts(), nil
 }

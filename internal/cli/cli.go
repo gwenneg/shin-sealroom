@@ -17,6 +17,7 @@ import (
 
 	"github.com/gwenneg/sealroom/internal/container"
 	creds "github.com/gwenneg/sealroom/internal/credentials"
+	"github.com/gwenneg/sealroom/internal/egress"
 	"github.com/gwenneg/sealroom/internal/launcher"
 	"github.com/gwenneg/sealroom/internal/proxy"
 	"github.com/gwenneg/sealroom/internal/publish"
@@ -115,6 +116,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return logout(stdout, stderr)
 	case "clean":
 		return clean(args[1:], stdout, stderr)
+	case "proxy":
+		// The proxy's role, in its own container; not for users.
+		return proxyRole(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return Usage
@@ -206,6 +210,24 @@ func clean(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := cleanRuns(rt, envOr("SEALROOM_AGENT_IMAGE", "sealroom-agent:dev"), olderThan, time.Now().UTC(), stdout); err != nil {
 		fmt.Fprintf(stderr, "sealroom: %v\n", err)
+		return Failure
+	}
+	return OK
+}
+
+func proxyRole(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	config := fs.String("config", "", "the run's rules")
+	caCert := fs.String("ca-cert", "", "the run's CA certificate")
+	caKey := fs.String("ca-key", "", "the run's CA key")
+	ip := fs.String("ip", "", "the proxy's address on the agent's network")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *config == "" || *caCert == "" || *caKey == "" || *ip == "" {
+		fmt.Fprintln(stderr, "sealroom proxy takes --config, --ca-cert, --ca-key and --ip")
+		return Usage
+	}
+	if err := egress.Main(*config, *caCert, *caKey, *ip, stdout); err != nil {
+		fmt.Fprintf(stderr, "sealroom proxy: %v\n", err)
 		return Failure
 	}
 	return OK

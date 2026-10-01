@@ -15,7 +15,7 @@ A plugin or skill author who wants to steal credentials or data, or to change co
 | Trusted | Why it is acceptable |
 |---|---|
 | The container runtime and the kernel | Every container rests on them. Sealroom narrows what the agent container can do |
-| The proxy | Built from a verified commit of an open source project, pinned by digest, and configured by Sealroom for each run |
+| The proxy | Sealroom's own, built from this repository and specified in [the proxy](proxy.md), with only Go's standard library and the Go team's `x/net` and `x/oauth2` |
 | Claude Code | The agent itself. Sealroom contains what the plugin can do through it, not Claude Code's own behaviour |
 | The model provider and GitHub | The destinations the user already uses |
 | The Sealroom launcher | Built reproducibly and released with signatures and provenance |
@@ -28,12 +28,15 @@ Everything that comes from the plugin, and everything the agent container writes
 
 | Attack | Defence |
 |---|---|
-| Read the user's files or keys | Nothing from the host is mounted except the plugin and the repository, both read-only, and one output directory |
+| Read the user's files or keys | Nothing from the host is mounted except the plugin and the repository, both read-only, the CA certificate and a localhost-only `/etc/hosts`, read-only, and one output directory |
 | Steal a credential | No credential exists in the agent container, only placeholders. The proxy adds the real ones |
 | Find a credential on disk after the run | The file that hands the credentials to the proxy is deleted as soon as the proxy is created, and the CA's key and the copy of the Google credentials once the proxy is removed. The Claude credential is kept in the operating system's keychain, and handed to the keychain tools on their standard input, never in their arguments |
 | Send data to a host of the attacker's | The agent container has no route out. The proxy refuses every host that is not allowed |
-| Send data through an allowed host with the attacker's own credential | The proxy drops every header that is not on its list, requires the placeholder on the model API, and adds the user's GitHub token only on the repository of the run |
+| Reach the host machine by a name the runtime provides | The agent's `/etc/hosts` is the run's own, naming localhost alone, read-only: rootless Podman's `host.containers.internal` and `host.docker.internal` do not exist, and every other name goes to the proxy's DNS |
+| Send data through an allowed host with the attacker's own credential | A credential header holding anything but the placeholder refuses the request, every other header not on the rule's list is dropped, and the user's GitHub token is added only on the repository of the run |
 | Send data to a Google Cloud project of the attacker's, with Vertex | Only Anthropic's models in the user's project and region are allowed, and the agent's own Google headers are dropped |
+| Have Anthropic's servers carry data out | Server-side tools that fetch, run code or connect anywhere, MCP servers, web search versions that run code, and images or documents given by URL, in any turn, are refused |
+| Smuggle a request past the proxy's checks | The proxy reads the agent's raw bytes itself and refuses anything not in HTTP/1.1's one strict form, before Go's parser can normalize it; the request sent upstream is built anew. Every bypass tried is a test in [proxy tests](proxy-tests.md) |
 | Store data on the provider for later retrieval | The Files API is refused. Only the model endpoints are allowed |
 | Push the code, or other data, to a repository of the attacker's | GitHub writes are refused. The push happens on the host, after the user's review, to the repository the user named |
 | Use the user's GitHub token beyond the run | It is added only to reads on the repository of the run |
@@ -41,7 +44,7 @@ Everything that comes from the plugin, and everything the agent container writes
 | Read another container's files, or have another container read the run's | With Podman under SELinux, the run's files are labeled for their container alone, except the CA certificate, which holds no secret |
 | Get the launcher to mount more than intended | Every host path is checked: absolute and clean, never the root, the home directory or one of its parents, and no character that changes the meaning of a mount option. The agent's mounts are pinned by a test |
 | Receive a real credential through the environment | The agent receives only a fixed list of variables, and every credential variable must hold the placeholder, or the run does not start |
-| Reconfigure the proxy | The rules are written by the launcher and mounted read-only. The proxy's environment holds only the two credential variables, never an `IRON_` override, and its management API is off |
+| Reconfigure the proxy | The rules are written by the launcher and mounted read-only. The proxy reads only the credentials the rules name from its environment, and has no management interface |
 | Change the network rules | No capabilities, no privilege to gain, and the rules live in the proxy, outside the agent container |
 | Run code on the host through the output | Every path of the patch is listed before it is applied, and one under a `.git` directory, in any letter case, is refused. The patch is applied to the host's own clone, which the container had read-only. The branch name is validated. The target repository never comes from the container |
 | Make the host read, show or post one of its own files | Every file of the output directory must be a regular file inside it: a link is refused, never followed |
@@ -61,5 +64,4 @@ Everything that comes from the plugin, and everything the agent container writes
 - **What the user accepts from a declaration leaves the machine.** A declared host receives whatever the plugin sends it.
 - **Harm within what is allowed.** A plugin can make a harmful change that the user approves, or spend the user's model quota.
 - **The containers share a kernel.** They run on the host's kernel, or on the kernel of the virtual machine Docker and Podman use on macOS, so a kernel flaw can break out.
-- **With Vertex, the query string is not checked.** The proxy's rules match the host, the method and the path. A key in the query string of a model request could name another Google project; the request still targets the user's project in its path, with the user's token.
 - **Reads without a token can carry data in their path.** Anonymous reads of public GitHub content are allowed, and their paths are chosen by the agent. Sealroom relies on GitHub not showing those reads to the owners of the content.

@@ -1,36 +1,33 @@
-// Package proxy writes the proxy's rules and the run's certificate authority.
-// The rules are the heart of Sealroom's defence: what the agent can reach,
-// and where the user's credentials may be added. TestConfigRules pins them.
+// Package proxy writes the proxy's rules for a run and the run's certificate
+// authority. The rules are the heart of Sealroom's defence: what the agent
+// can reach, and where the user's credentials may be added. TestConfigRules
+// pins them, and docs/proxy.md specifies the proxy that enforces them.
 package proxy
 
 import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 
+	"github.com/gwenneg/sealroom/internal/egress"
 	"github.com/gwenneg/sealroom/internal/sandbox"
 )
 
 // Paths inside the proxy container.
 const (
-	ConfigPath = "/etc/sealroom/proxy.yaml"
+	ConfigPath = "/etc/sealroom/proxy.json"
 	CACertPath = "/etc/sealroom/ca.crt"
 	CAKeyPath  = "/etc/sealroom/ca.key"
 	// GoogleCredentialsPath holds the user's Google credentials, with Vertex.
 	GoogleCredentialsPath = sandbox.GoogleCredentialsDst
 )
 
-// The variables of the proxy's environment file. The file holds nothing
-// else: iron-proxy reads variables starting with IRON_ as overrides of its
-// configuration, so no other name may ever reach it.
+// The variables of the proxy's environment file, and nothing else.
 const (
-	ClaudeCredentialEnv = "SEALROOM_CLAUDE_CREDENTIAL"
-	GitHubTokenEnv      = "SEALROOM_GITHUB_TOKEN"
-	// GoogleCredentialsEnv points Google's libraries in the proxy at the
-	// user's credentials, with Vertex.
-	GoogleCredentialsEnv = "GOOGLE_APPLICATION_CREDENTIALS"
+	ClaudeCredentialEnv  = "SEALROOM_CLAUDE_CREDENTIAL"
+	GitHubTokenEnv       = "SEALROOM_GITHUB_TOKEN"
+	GoogleCredentialsEnv = egress.GoogleCredentialsEnv
 )
 
 // ClaudeAuth is how the user reaches Claude.
@@ -68,7 +65,7 @@ type Allow struct {
 var (
 	repoPattern    = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
 	projectPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
-	regionPattern  = regexp.MustCompile(`^(global|[a-z]+-[a-z]+[0-9]{1,2})$`)
+	regionPattern  = regexp.MustCompile(`^(global|us|eu|[a-z]+-[a-z]+[0-9]{1,2})$`)
 )
 
 // ValidRepo reports whether repo is an owner/repo that is safe to write into
@@ -87,32 +84,38 @@ func ValidVertex(project, region string) bool {
 	return projectPattern.MatchString(project) && regionPattern.MatchString(region)
 }
 
-// VertexHost returns the Vertex AI endpoint of a region.
+// VertexHost returns the Vertex AI endpoint of a region: the global one, a
+// multi-region one, or a region's own.
 func VertexHost(region string) string {
-	if region == "global" {
+	switch region {
+	case "global":
 		return "aiplatform.googleapis.com"
+	case "us", "eu":
+		return "aiplatform." + region + ".rep.googleapis.com"
 	}
 	return region + "-aiplatform.googleapis.com"
 }
 
-// rule matches requests by host, and optionally by method and path.
-type rule struct {
-	Host    string   `json:"host"`
-	Methods []string `json:"methods,omitempty"`
-	Paths   []string `json:"paths,omitempty"`
-}
+// The headers each destination receives, from what Claude Code, git and the
+// GitHub CLI send. Every other header is dropped, and credentials are only
+// ever added by the proxy.
+var (
+	claudeHeaders = []string{
+		"Accept", "Accept-Encoding", "Content-Type", "User-Agent",
+		"Anthropic-Version", "Anthropic-Beta", "Anthropic-Dangerous-Direct-Browser-Access",
+		"X-App", "X-Claude-Code-Session-Id",
+		"X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-Os", "X-Stainless-Package-Version",
+		"X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout",
+	}
+	gitHubAPIHeaders = []string{"Accept", "Accept-Encoding", "Content-Type", "User-Agent", "X-Github-Api-Version", "Time-Zone"}
+	gitHeaders       = []string{"Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Content-Encoding", "User-Agent", "Git-Protocol", "Pragma"}
+	rawHeaders       = []string{"Accept", "Accept-Encoding", "User-Agent"}
+	declaredHeaders  = []string{"Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "User-Agent"}
+)
 
-type transform struct {
-	Name   string `json:"name"`
-	Config any    `json:"config"`
-}
-
-// modelHeaders are what Claude Code sends to the model, and all that reaches
-// it besides a credential of the user's.
-var modelHeaders = []string{"Content-Type", "Accept", "Accept-Encoding", "User-Agent", "/^anthropic-.*$/", "/^x-stainless-.*$/", "/^x-claude-.*$/", "X-App"}
-
-// Config returns the proxy's configuration for a run. It is JSON, which is
-// valid YAML, so writing it needs no dependency.
+// Config returns the proxy's rules for a run, as JSON. The first rule that
+// matches a request decides it, so the rules of the run's repository, which
+// add the user's GitHub token, come before the anonymous reads of any other.
 func Config(r Run) ([]byte, error) {
 	if !ValidRepo(r.Repo) {
 		return nil, fmt.Errorf("repository %q is not a valid owner/repo", r.Repo)
@@ -120,111 +123,69 @@ func Config(r Run) ([]byte, error) {
 	if r.ProxyIP == "" {
 		return nil, fmt.Errorf("the proxy has no address")
 	}
-	if r.Claude == Vertex && !ValidVertex(r.VertexProject, r.VertexRegion) {
-		return nil, fmt.Errorf("Vertex project %q and region %q are not valid", r.VertexProject, r.VertexRegion)
-	}
-	repo := "/repos/" + r.Repo
-	git := []string{
-		"/" + r.Repo + "/info/refs", "/" + r.Repo + "/git-upload-pack",
-		"/" + r.Repo + ".git/info/refs", "/" + r.Repo + ".git/git-upload-pack",
+	var rules []egress.Rule
+	add := func(method, host, path, query string, headers []string, cred *egress.Credential, inspect bool) {
+		rules = append(rules, egress.Rule{Method: method, Host: host, Path: path, Query: query, Headers: headers, Credential: cred, InspectMessages: inspect})
 	}
 
-	allow := []rule{
-		{Host: "api.github.com", Methods: []string{"GET", "HEAD"}, Paths: []string{"/", "/user", "/repos/*"}},
-		{Host: "raw.githubusercontent.com", Methods: []string{"GET"}, Paths: []string{"/*"}},
-		// Fetching the repository of the run; git sends a POST to read.
-		{Host: "github.com", Methods: []string{"GET", "POST"}, Paths: git},
-	}
-	secrets := []map[string]any{
-		// The user's GitHub token, added to reads of the run's repository only.
-		{
-			"source": map[string]any{"type": "env", "var": GitHubTokenEnv},
-			"inject": map[string]any{"header": "Authorization", "formatter": "Bearer {{ .Value }}"},
-			"rules":  []rule{{Host: "api.github.com", Methods: []string{"GET", "HEAD"}, Paths: []string{repo, repo + "/*"}}},
-		},
-		{
-			"source": map[string]any{"type": "env", "var": GitHubTokenEnv},
-			"inject": map[string]any{"header": "Authorization", "formatter": `Basic {{ base64 "x-access-token:" .Value }}`},
-			"rules":  []rule{{Host: "github.com", Methods: []string{"GET", "POST"}, Paths: git}},
-		},
-	}
-	transforms := []transform{
-		{"allowlist", nil}, // filled below
-		// On GitHub, every header the agent sends is dropped but these, so
-		// no credential of its own ever reaches GitHub.
-		{"header_allowlist", map[string]any{
-			"headers": []string{"Accept", "Accept-Encoding", "User-Agent", "Content-Type", "Git-Protocol", "X-GitHub-Api-Version"},
-			"rules":   []rule{{Host: "api.github.com"}, {Host: "raw.githubusercontent.com"}, {Host: "github.com"}},
-		}},
-	}
-
-	if r.Claude == Vertex {
-		// Claude's models in the user's project and region, nowhere else,
-		// so no request can reach a project of anyone else's.
-		model := rule{
-			Host:    VertexHost(r.VertexRegion),
-			Methods: []string{"POST"},
-			Paths:   []string{"/v1/projects/" + r.VertexProject + "/locations/" + r.VertexRegion + "/publishers/anthropic/models/*"},
+	switch r.Claude {
+	case Vertex:
+		if !ValidVertex(r.VertexProject, r.VertexRegion) {
+			return nil, fmt.Errorf("Vertex project %q and region %q are not valid", r.VertexProject, r.VertexRegion)
 		}
-		allow = append(allow, model)
-		transforms = append(transforms,
-			// Only what Claude Code sends: no credential, API key or billing
-			// project of the agent's own reaches Google.
-			transform{"header_allowlist", map[string]any{"headers": modelHeaders, "rules": []rule{{Host: model.Host}}}},
-			// An access token minted from the user's credentials, added to
-			// the model's requests only.
-			transform{"gcp_auth", map[string]any{
-				"credentials_provider": map[string]any{"type": "workload_identity"},
-				"scopes":               []string{"https://www.googleapis.com/auth/cloud-platform"},
-				"rules":                []rule{model},
-			}},
-			transform{"secrets", map[string]any{"secrets": secrets}},
-		)
-	} else {
-		claudeHeader := "Authorization"
+		// Claude's models in the user's project and region, nowhere else.
+		google := &egress.Credential{Secret: egress.Google, Header: "Authorization", Scheme: "Bearer"}
+		add("POST", VertexHost(r.VertexRegion), "/v1/projects/"+r.VertexProject+"/locations/"+r.VertexRegion+"/publishers/anthropic/models/*", "", claudeHeaders, google, true)
+	default:
+		claude := &egress.Credential{Secret: ClaudeCredentialEnv, Header: "Authorization", Scheme: "Bearer"}
 		if r.Claude == APIKey {
-			claudeHeader = "X-Api-Key"
+			claude = &egress.Credential{Secret: ClaudeCredentialEnv, Header: "X-Api-Key"}
 		}
-		allow = append(allow,
-			rule{Host: "api.anthropic.com", Methods: []string{"POST"}, Paths: []string{"/v1/messages", "/v1/messages/count_tokens"}},
-			// Read-only policies that organizations set for Claude Code.
-			rule{Host: "api.anthropic.com", Methods: []string{"GET"}, Paths: []string{"/api/claude_code/policy_limits", "/api/claude_code/settings"}},
-		)
-		// The user's Claude credential replaces the placeholder, and a
-		// request without the placeholder is refused.
-		secrets = append([]map[string]any{{
-			"source":  map[string]any{"type": "env", "var": ClaudeCredentialEnv},
-			"replace": map[string]any{"proxy_value": sandbox.Placeholder, "match_headers": []string{claudeHeader}, "require": true},
-			"rules":   []rule{{Host: "api.anthropic.com"}},
-		}}, secrets...)
-		transforms = append(transforms,
-			transform{"secrets", map[string]any{"secrets": secrets}},
-			// On the model API, only what Claude Code sends and the credential
-			// header of the user's kind of credential survive.
-			transform{"header_allowlist", map[string]any{
-				"headers": append(slices.Clone(modelHeaders), claudeHeader),
-				"rules":   []rule{{Host: "api.anthropic.com"}},
-			}},
-		)
+		for _, q := range []string{"beta=true", ""} {
+			add("POST", "api.anthropic.com", "/v1/messages", q, claudeHeaders, claude, true)
+			add("POST", "api.anthropic.com", "/v1/messages/count_tokens", q, claudeHeaders, claude, true)
+		}
+		// Read-only policies that organizations set for Claude Code.
+		add("GET", "api.anthropic.com", "/api/claude_code/policy_limits", "", claudeHeaders, claude, false)
+		add("GET", "api.anthropic.com", "/api/claude_code/settings", "", claudeHeaders, claude, false)
 	}
-	for _, d := range r.Declared {
-		allow = append(allow, rule{Host: d.Host, Methods: d.Methods, Paths: d.Paths})
-	}
-	transforms[0].Config = map[string]any{"rules": allow}
 
-	cfg := map[string]any{
-		"dns": map[string]any{"listen": ":53", "proxy_ip": r.ProxyIP},
-		"proxy": map[string]any{
-			"http_listen":  ":80",
-			"https_listen": ":443",
-			// The default of 1 MiB silently truncates long conversations.
-			"max_request_body_bytes":           64 << 20,
-			"upstream_response_header_timeout": "10m",
-		},
-		// Out of the agent's reach, on the proxy's own loopback.
-		"metrics":    map[string]any{"listen": "127.0.0.1:9090"},
-		"tls":        map[string]any{"mode": "mitm", "ca_cert": CACertPath, "ca_key": CAKeyPath},
-		"transforms": transforms,
+	// GitHub: the user's token on reads of the run's repository only.
+	token := &egress.Credential{Secret: GitHubTokenEnv, Header: "Authorization", Scheme: "Bearer"}
+	for _, m := range []string{"GET", "HEAD"} {
+		add(m, "api.github.com", "/repos/"+r.Repo, egress.AnyQuery, gitHubAPIHeaders, token, false)
+		add(m, "api.github.com", "/repos/"+r.Repo+"/**", egress.AnyQuery, gitHubAPIHeaders, token, false)
+	}
+	git := &egress.Credential{Secret: GitHubTokenEnv, Header: "Authorization", Scheme: "basic-x-access-token"}
+	for _, base := range []string{"/" + r.Repo, "/" + r.Repo + ".git"} {
+		add("GET", "github.com", base+"/info/refs", "service=git-upload-pack", gitHeaders, git, false)
+		add("POST", "github.com", base+"/git-upload-pack", "", gitHeaders, git, false)
+	}
+	// Anonymous reads of any other repository, and of raw files.
+	for _, m := range []string{"GET", "HEAD"} {
+		add(m, "api.github.com", "/", "", gitHubAPIHeaders, nil, false)
+		add(m, "api.github.com", "/repos/**", egress.AnyQuery, gitHubAPIHeaders, nil, false)
+	}
+	add("GET", "raw.githubusercontent.com", "/**", "", rawHeaders, nil, false)
+
+	for _, d := range r.Declared {
+		for _, m := range d.Methods {
+			for _, p := range d.Paths {
+				query, headers := egress.AnyQuery, declaredHeaders
+				if d.Host == "github.com" {
+					headers, query = gitHeaders, ""
+					if strings.HasSuffix(p, "/info/refs") {
+						query = "service=git-upload-pack"
+					}
+				}
+				add(m, d.Host, p, query, headers, nil, false)
+			}
+		}
+	}
+
+	cfg := egress.Config{Placeholder: sandbox.Placeholder, Rules: rules}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 	return json.MarshalIndent(cfg, "", "  ")
 }
@@ -233,7 +194,7 @@ func Config(r Run) ([]byte, error) {
 type Env struct {
 	Claude string // the Claude credential, empty with Vertex
 	GitHub string
-	Vertex bool // point Google's libraries at the mounted credentials
+	Vertex bool // point the proxy at the mounted Google credentials
 }
 
 // EnvFile returns the proxy's environment file: the credentials, and nothing

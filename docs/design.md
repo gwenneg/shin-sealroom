@@ -45,7 +45,7 @@ The launcher creates the internal network on a random private subnet, starts the
 | Internal network only: no gateway, and DNS answered by the proxy | Nothing reaches the internet except through the proxy. Raw sockets, hard-coded addresses and DNS tunnels have no route |
 | Non-root user, all capabilities dropped, `no-new-privileges` | No privilege to gain, and nothing that could change the network rules |
 | Read-only root filesystem, throwaway home and work directory in memory | The plugin cannot alter the tooling, and nothing persists after the run |
-| Nothing from the host mounted, except copies of the plugin and the repository read-only, the proxy's CA certificate, and one output directory, all in the run directory | No home directory, no keys, no credentials, no container runtime socket |
+| Nothing from the host mounted, except copies of the plugin and the repository read-only, the proxy's CA certificate, an `/etc/hosts` naming localhost alone, and one output directory, all in the run directory | No home directory, no keys, no credentials, no container runtime socket |
 | No credential of any kind, only placeholders | A plugin that reads every file and every environment variable finds nothing usable |
 | Memory, CPU, process and time limits | A plugin can use only a bounded share of the machine |
 
@@ -61,29 +61,25 @@ The repository is copied into the container at start, so the plugin never writes
 
 ## The proxy
 
-The proxy is [iron-proxy](https://github.com/paradigmxyz/iron-proxy), an egress firewall built for untrusted workloads. It intercepts TLS with a CA created for the run, so it sees each request's host, method, path and headers.
-
-Sealroom does not use its published images or binaries, which are not signed. It builds the proxy from a release commit whose signature was verified when it was pinned, on a minimal base image pinned by digest, with Go modules checked against iron-proxy's `go.sum`. The image, in `images/proxy`, runs as a non-root user and holds nothing but the proxy's static binary.
+The proxy is Sealroom's own, `internal/egress`, the `sealroom` binary in its proxy role: [the proxy](proxy.md) specifies it, and [proxies considered](proxy-alternatives.md) explains why Sealroom does not use an existing one. Its image, in `images/proxy`, is built from this repository alone, on a minimal base image pinned by digest, and runs as a non-root user with nothing but the static binary. It answers the agent's DNS for the run's hosts only, intercepts TLS with the run's CA, and accepts only requests in their one canonical form.
 
 ### What each credential can do
 
 | Destination | Allowed | Credential added by the proxy |
 |---|---|---|
-| Anthropic API | `POST` to the model endpoints, and Claude Code's read-only policy endpoints | The user's Claude credential, only in place of the agent's placeholder. A request without the placeholder is refused, so a plugin's own key never gets through |
+| Anthropic API | `POST` to the model endpoints, and Claude Code's read-only policy endpoints | The user's Claude credential. The agent's placeholder in `Authorization` or `X-Api-Key` is dropped; any other credential, anywhere, refuses the request |
 | Google Vertex AI | `POST` to Anthropic's models in the user's project and region, and nothing else on Google | An access token the proxy mints from the user's Google credentials. The agent runs Claude Code with `CLAUDE_CODE_SKIP_VERTEX_AUTH` and never holds a Google credential |
 | GitHub API | `GET` and `HEAD` only | The user's GitHub token, only on the repository of the run. Other repositories are read anonymously |
-| GitHub git | Read-only fetch of the repository of the run, and of what the plugin declares | None |
+| GitHub git | Fetches only: the repository of the run, with the user's token, and what the plugin declares, without | The user's GitHub token on the run's repository |
 | Anything else | Refused, unless the plugin declares it and the user accepts it before the run | None |
 
-Every header the agent sends is dropped unless it is on the proxy's list for that destination, so a plugin cannot slip a credential of its own next to the placeholder. The Files API, which could store data for later retrieval, is refused. Every request is logged with its decision.
+Every header the agent sends is dropped unless it is on the rule's list for that destination, and credentials are only ever added by the proxy, last. Requests to Claude's Messages API, directly or on Vertex, are read before they are forwarded, as the same bytes: one asking Anthropic's servers to fetch, run or connect to anything, such as `web_fetch`, code execution or an MCP server, is refused, while web search stays allowed. The Files API, which could store data for later retrieval, is refused. Every decision is logged.
 
-The rules are written for each run by `internal/proxy`, from the repository of the run and the kind of Claude credential, and nothing else. Two tests pin them: `TestConfigRules` checks what the rules say, and `TestProxyRules` starts the real proxy image with them and probes it from the agent's network, against the real services, with fake credentials: every refusal must come from the proxy, and a fake credential must reach the service exactly where the rules add it.
+The rules are written for each run by `internal/proxy`, from the repository of the run, the kind of Claude credential and what the user accepted from the plugin's declaration, and nothing else. `TestConfigRules` checks what the rules say; `TestProxyRules` and `TestProxyRulesVertex` start the real proxy image with them and probe it from the agent's network, against the real services, with fake credentials: every refusal must come from the proxy, and a fake credential must reach the service exactly where the rules add it.
 
-Each run gets its own certificate authority, an ECDSA P-256 key valid for 24 hours that cannot sign another authority. Only the agent trusts it.
+Each run gets its own certificate authority, an ECDSA P-256 key valid for 24 hours that cannot sign another authority, constrained to the run's hosts: a certificate it signs for any other name does not verify. Only the agent trusts it.
 
-The proxy's credentials reach it in an environment file with exactly two variables. iron-proxy reads variables starting with `IRON_` as overrides of its configuration, so no other name ever reaches it. Its management API and its explicit tunnel listener stay off.
-
-The proxy's limits are raised for agent traffic: request bodies up to 64 MiB, since the default truncates large conversations silently, and ten minutes for an upstream answer to begin. Its metrics listener is bound to its own loopback, out of the agent's reach.
+The proxy's credentials reach it in an environment file holding only them.
 
 ## Credentials
 
@@ -97,7 +93,7 @@ The credentials live on the host and in the proxy container, never in the agent 
 | GitHub, during the run | The user's `gh` login | Reads on the repository of the run |
 | GitHub, after the run | The user's `gh` login, used by the launcher on the host | The push and the pull request, after the user's yes |
 
-With Vertex, set as for Claude Code itself (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`), the launcher copies the user's Application Default Credentials, a user login from `gcloud auth application-default login` or a service account key, into the run directory, and mounts the copy into the proxy only; the copy is deleted when the run ends, and the user's own file is never mounted, so SELinux relabeling never touches it. iron-proxy's `gcp_auth` mints short-lived access tokens from it and adds them only to requests for Anthropic's models in the user's project and region. Any other project, region or publisher is refused by the allowlist, so a request cannot reach a project of anyone else's, and headers such as `x-goog-user-project` or an API key of the agent's never reach Google. The Anthropic API is not reachable at all with Vertex.
+With Vertex, set as for Claude Code itself (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`), the launcher copies the user's Application Default Credentials, a user login from `gcloud auth application-default login` or a service account key, into the run directory, and mounts the copy into the proxy only; the copy is deleted when the run ends, and the user's own file is never mounted, so SELinux relabeling never touches it. the proxy mints short-lived access tokens from it, with a token source built once and independent of any request, and adds them only to requests for Anthropic's models in the user's project and region. Any other project, region or publisher is refused by the allowlist, so a request cannot reach a project of anyone else's, and headers such as `x-goog-user-project` or an API key of the agent's never reach Google. The Anthropic API is not reachable at all with Vertex.
 
 `sealroom login` reads the Claude credential without showing it, and saves it in the operating system's keychain: the login Keychain on macOS, through `security`, and the Secret Service on Linux, such as GNOME Keyring or KWallet, through `secret-tool`. Both tools receive the secret on their standard input, never in their arguments, where any process on the machine could read it. Only one credential is saved: saving one kind removes the other, and `sealroom logout` removes it. A credential must look like a subscription token or an API key, with nothing but letters, digits, dashes and underscores, so none can carry a newline into a file or a space into a keychain command. The environment variables, when set, come first, for scripts.
 

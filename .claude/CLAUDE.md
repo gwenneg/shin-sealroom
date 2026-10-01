@@ -9,12 +9,15 @@ Sealroom runs untrusted plugins with the user's credentials within reach of a pr
 ## Rules the design must keep
 
 - No credential ever enters the agent container, not even short-lived. The proxy adds credentials; the agent holds placeholders.
-- The agent container has no route out except the proxy, no capabilities, a read-only root, and nothing from the host but the plugin and the repository read-only, the proxy's CA certificate, and the output directory.
+- The agent container has no route out except the proxy, no capabilities, a read-only root, and nothing from the host but the plugin and the repository read-only, the proxy's CA certificate, the run's own `/etc/hosts` naming localhost alone, and the output directory.
 - The container never pushes. The push and the pull request happen on the host, after the user's yes.
 - Everything the agent container writes is untrusted input on the host: validated, size-limited, never executed, and never allowed to pick the target repository. Only `internal/review` reads it, and every string from it goes through `review.Sanitize` before reaching the terminal.
 - Container restrictions live only in `internal/sandbox`, and `TestArgsSeal` pins them. Never weaken the test to make a change pass.
 - The proxy's rules live only in `internal/proxy`, pinned by `TestConfigRules` and, against the real proxy and services, by `TestProxyRules`. Never weaken either to make a change pass.
-- The proxy is built from a verified release commit, never taken from a published image or binary. [docs/development.md](../docs/development.md) has the steps to move to a new release.
+- Sealroom's own proxy, `internal/egress`, follows [docs/proxy.md](../docs/proxy.md): it refuses anything not in its one canonical form and never normalizes. A change to what it accepts updates that document in the same pull request.
+- Every proxy test has an ID that starts its subtest name and an entry in [docs/proxy-tests.md](../docs/proxy-tests.md) with its source and expected outcome. A bypass found is first a failing test, then a fix; an expectation only ever moves toward refusing more. `internal/egress/wire.go` reads the agent's raw bytes before Go's HTTP parser: what that parser would normalize is refused there.
+- No 1.0 release before every item of [Before 1.0](../docs/proxy.md#before-10) is done, the AI red-teaming of the complete proxy included.
+- The proxy image is built from this repository alone: no third-party proxy, image or binary.
 - Every download in an image is pinned to a version and checked against a checksum written in the image's definition. [docs/development.md](../docs/development.md) has the steps to move Claude Code and the GitHub CLI.
 - A change to what the proxy allows, or to the containers' restrictions, updates the design or the threat model in the same pull request.
 - **Everything added is at its latest release**: languages, dependencies, GitHub Actions, tools, container images, Claude Code. Look the version up at the time of adding, never reuse one from memory or from the local toolchain. Actions and images are pinned by SHA or digest, with the version in a comment.

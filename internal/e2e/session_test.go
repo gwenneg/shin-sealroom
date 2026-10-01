@@ -73,7 +73,7 @@ func TestSession(t *testing.T) {
 	}
 	for _, want := range []string{
 		"+model=401",              // the fake subscription token reached Anthropic
-		"+other-host=403",         // refused by the proxy
+		"+other-host=000",         // no such name: the proxy answers DNS for allowed names only
 		"+run-repository=401",     // the fake GitHub token was added
 		"+credential-variables=2", // the Claude token and the GitHub token...
 		"+placeholders=2",         // ...both placeholders

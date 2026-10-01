@@ -11,9 +11,9 @@ name: Images
 on:
   push:
     branches: [main]
-    paths: ['images/**', '.github/workflows/images.yml']
+    paths: ['images/**', 'cmd/**', 'internal/**', 'go.mod', 'go.sum', '.dockerignore', '.github/workflows/images.yml']
   pull_request:
-    paths: ['images/**', '.github/workflows/images.yml']
+    paths: ['images/**', 'cmd/**', 'internal/**', 'go.mod', 'go.sum', '.dockerignore', '.github/workflows/images.yml']
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [proxy, agent]
+        include:
+          # The proxy is Sealroom's own binary, built from the repository's root.
+          - image: proxy
+            context: .
+          - image: agent
+            context: images/agent
     permissions:
       contents: read
       packages: write
@@ -58,7 +63,8 @@ jobs:
         name: Build for amd64 and arm64
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: images/${{ matrix.image }}
+          context: ${{ matrix.context }}
+          file: images/${{ matrix.image }}/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
