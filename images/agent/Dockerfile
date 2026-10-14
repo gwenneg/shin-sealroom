@@ -1,7 +1,7 @@
 # The agent: Claude Code, git and the GitHub CLI, with stand-ins for the
 # commands that would publish anything. It holds no credential; the proxy
 # adds them. Every download is pinned and checked against a checksum.
-FROM docker.io/library/debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # Claude Code, the stable channel. Checksums from the release's manifest.json.
 ARG CLAUDE_CODE_VERSION=2.1.280
