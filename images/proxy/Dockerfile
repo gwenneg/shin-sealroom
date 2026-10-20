@@ -2,7 +2,7 @@
 # release commit whose signature was checked when it was pinned, never from
 # its published image or binaries, which are not signed. See
 # docs/development.md for how to move to a new release.
-FROM docker.io/library/golang:1.27.1-trixie@sha256:433790e515d27dc6003e847e644cc0af956985cf315c1c58a3b73ee2dd305183 AS build
+FROM docker.io/library/golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
 # iron-proxy v0.52.0
 ARG IRON_PROXY_COMMIT=8a0eb0beb6524f4a7739b799842a13159d8b739e
 RUN git clone --quiet --filter=blob:none https://github.com/paradigmxyz/iron-proxy /src \
